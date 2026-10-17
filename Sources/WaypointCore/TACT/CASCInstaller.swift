@@ -212,6 +212,7 @@ public struct CASCInstaller: Sendable {
                 return true
             }
         }
+        try Task.checkCancellation()
         // Download order: archive by archive, front to back; loose CDN files last.
         storage.sort { a, b in
             let x = a.archive < 0 ? Int32.max : a.archive, y = b.archive < 0 ? Int32.max : b.archive
@@ -236,6 +237,7 @@ public struct CASCInstaller: Sendable {
     // MARK: Apply
 
     public func apply(_ plan: CASCInstallPlan, progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
+        try Task.checkCancellation()
         let started = Date()
         let fm = FileManager.default
         guard RunningProcesses.inside(root).isEmpty else { throw UpdateError.gameRunning }
@@ -275,6 +277,7 @@ public struct CASCInstaller: Sendable {
             do {
                 try copy(try await plan.cdn.cachedFile(kind, hash, suffix: ".index"), to: destination)
             } catch {
+                if Task.isCancelled || NetworkRetry.isCancellation(error) { throw error }
                 Log.warning(.install, "index_unavailable", nil, ["uid": install.uid, "index": hash, "kind": kind.rawValue, "error": error])
             }
         }
@@ -304,6 +307,7 @@ public struct CASCInstaller: Sendable {
         }
 
         // Loose files (the game's .app and friends), verified like updates.
+        try Task.checkCancellation()
         try fm.createDirectory(at: looseRoot, withIntermediateDirectories: true)
         if !plan.loose.isEmpty {
             let base = counter.completed
@@ -312,8 +316,12 @@ public struct CASCInstaller: Sendable {
                     progress(UpdateProgress(completedBytes: base + p.completedBytes, totalBytes: total,
                                             completedFiles: p.completedFiles, totalFiles: p.totalFiles))
                 }
+        } else {
+            try Task.checkCancellation()
         }
 
+        // The loose-file commit and build records finish together. A pause
+        // after loose files were replaced must not leave old build metadata.
         try writeBuildInfo(plan)
         if !config.subfolder.isEmpty {
             try write(Data("Product Flavor!STRING:0\n\(install.productCode)\n".utf8), to: looseRoot.appendingPathComponent(".flavor.info"))
@@ -437,6 +445,7 @@ public struct CASCInstaller: Sendable {
             }
             for _ in 0..<concurrency { next() }
             while let results = try await group.next() {
+                try Task.checkCancellation()
                 try autoreleasepool {
                     for (item, blob) in results {
                         try writer.append(key: item.key, blob: blob, fullKey: item.fullKey)
@@ -448,6 +457,7 @@ public struct CASCInstaller: Sendable {
         }
         // Battle.net may have started during a long download: leave the index
         // files alone then; the journal keeps what was downloaded for next time.
+        try Task.checkCancellation()
         try BattleNet.ensureNotRunning()
         try writer.finish()
         Log.info(.install, "storage_written", nil, ["uid": install.uid, "files": writer.count, "update": writer.isUpdate])
@@ -465,16 +475,24 @@ public struct CASCInstaller: Sendable {
         if !verify, let installed = install.buildConfig {
             if installed == target.buildConfig {
                 previous = Dictionary(wanted.map { ($0.path, $0.contentKey) }, uniquingKeysWith: { a, _ in a })
-            } else if let oldConfig = try? await cdn.cached(.config, installed, localCopy: configURL(installed)),
-                      let oldInstallKey = TACTConfig(String(decoding: oldConfig, as: UTF8.self)).encodedKey("install"),
-                      let oldManifest = try? InstallManifest(BLTE.decode(try await cdn.cached(.data, oldInstallKey))) {
-                previous = Dictionary(oldManifest.select(tagString: tags).map {
-                    ($0.path.replacingOccurrences(of: "\\", with: "/"), $0.contentKey)
-                }, uniquingKeysWith: { a, _ in a })
             } else {
-                log("Installed build's manifest is gone from the CDN; checking files by hash")
+                do {
+                    let oldConfig = try await cdn.cached(.config, installed, localCopy: configURL(installed))
+                    guard let oldInstallKey = TACTConfig(String(decoding: oldConfig, as: UTF8.self)).encodedKey("install") else {
+                        throw TACTError.malformed("installed build config (no install)")
+                    }
+                    let oldManifest = try InstallManifest(BLTE.decode(try await cdn.cached(.data, oldInstallKey)))
+                    previous = Dictionary(oldManifest.select(tagString: tags).map {
+                        ($0.path.replacingOccurrences(of: "\\", with: "/"), $0.contentKey)
+                    }, uniquingKeysWith: { a, _ in a })
+                } catch {
+                    if NetworkRetry.isCancellation(error) { throw error }
+                    try Task.checkCancellation()
+                    log("Installed build's manifest is gone from the CDN; checking files by hash")
+                }
             }
         }
+        try Task.checkCancellation()
         let updater = GameUpdater(install: looseInstall, versions: versions, store: store)
         return try GameUpdater.diff(
             wanted: wanted, previous: previous,

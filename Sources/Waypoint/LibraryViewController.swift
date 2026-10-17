@@ -133,7 +133,10 @@ final class LibraryViewController: NSViewController, NSTableViewDataSource, NSTa
         for product in model.installable {
             let phase = model.phase(of: product)
             if phase != .idle { rows.append(.installable(InstallableRowState(product: product, phase: phase))) }
-            if case .updating = phase { continue }
+            switch phase {
+            case .updating, .pausing, .paused: continue
+            default: break
+            }
             installMenuItems.append(ActionItem(product.displayName) { [weak self] in self?.install(product) })
         }
         show(rows)

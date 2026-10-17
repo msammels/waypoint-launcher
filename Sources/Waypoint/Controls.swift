@@ -10,6 +10,7 @@ extension NSTextField {
         label.font = monospacedDigits ? .monospacedDigitSystemFont(ofSize: font.pointSize, weight: .regular) : font
         label.textColor = color
         label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         return label
     }

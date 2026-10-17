@@ -40,6 +40,7 @@ final class GameCell: NSView {
     private let status = NSTextField.label(.body, color: .secondaryLabelColor)
     private let spinner = NSProgressIndicator.spinner()
     private let button = NSButton(title: "Play", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var iconPath: String?
     private var state: GameRowState?
     private var model: AppModel?
@@ -49,7 +50,10 @@ final class GameCell: NSView {
         identifier = Self.identifier
         button.target = self
         button.action = #selector(primaryAction)
-        layOutRow(in: self, icon: icon, text: [name, progress, detail], trailing: [status, spinner, button])
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelDownload)
+        cancelButton.toolTip = "Stop this download. Downloaded data is kept for next time."
+        layOutRow(in: self, icon: icon, text: [name, progress, detail], trailing: [status, spinner, cancelButton, button])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -73,6 +77,11 @@ final class GameCell: NSView {
             progress.doubleValue = update?.fraction ?? 0
             progress.isHidden = false
             detail.stringValue = progressDescription(update, waiting: "Checking files…")
+        case .pausing(let update), .paused(let update):
+            progress.doubleValue = update?.fraction ?? 0
+            progress.isHidden = false
+            let pausing = if case .pausing = state.phase { true } else { false }
+            detail.stringValue = downloadStatus(update, label: pausing ? "Pausing…" : "Paused")
         case .failed(let message):
             detail.stringValue = message
             detail.toolTip = message
@@ -90,9 +99,14 @@ final class GameCell: NSView {
         spinner.isHidden = true
         spinner.stopAnimation(nil)
         button.isHidden = true
-        if state.isRunning {
+        cancelButton.isHidden = !model.canCancelDownload(uid: game.id)
+        let hasDownloadControls: Bool = switch state.phase {
+        case .updating, .pausing, .paused: true
+        default: false
+        }
+        if state.isRunning, !hasDownloadControls {
             show(status: "Running")
-        } else if !game.isSupported {
+        } else if !game.isSupported, !hasDownloadControls {
             show(status: game.appURL == nil ? "Not installed" : (game.runsNatively ? "Unsupported" : "Needs Rosetta"))
         } else {
             switch state.phase {
@@ -101,11 +115,22 @@ final class GameCell: NSView {
             case .launching:
                 showSpinner("Starting…")
             case .updating:
-                break
+                button.title = "Pause"
+                button.isEnabled = model.canPauseDownload(uid: game.id)
+                button.isHidden = false
+            case .pausing:
+                button.title = "Pausing…"
+                button.isEnabled = false
+                button.isHidden = false
+            case .paused:
+                button.title = "Resume"
+                button.isEnabled = model.canResumeDownload(uid: game.id)
+                button.isHidden = false
             case .idle, .failed:
                 let updates = state.update != nil && GameUpdate.canUpdate(game.install)
-                button.title = updates ? "Update" : "Play"
-                button.isEnabled = updates ? state.canUpdate : state.canPlay
+                let retry = model.canResumeDownload(uid: game.id)
+                button.title = retry ? "Resume" : (updates ? "Update" : "Play")
+                button.isEnabled = retry || (updates ? state.canUpdate : state.canPlay)
                 button.isHidden = false
             }
         }
@@ -125,11 +150,24 @@ final class GameCell: NSView {
     @objc private func primaryAction() {
         guard let state, let model else { return }
         let game = state.game
-        if state.update != nil, GameUpdate.canUpdate(game.install) {
+        if model.canPauseDownload(uid: game.id) {
+            model.pauseDownload(uid: game.id)
+        } else if model.canResumeDownload(uid: game.id) {
+            Task { await model.resumeDownload(uid: game.id) }
+        } else if case .pausing = state.phase {
+            return
+        } else if case .paused = state.phase {
+            return
+        } else if state.update != nil, GameUpdate.canUpdate(game.install) {
             Task { await model.update(game) }
         } else {
             Task { await model.play(game) }
         }
+    }
+
+    @objc private func cancelDownload() {
+        guard let state, let model else { return }
+        model.cancelDownload(uid: state.game.id)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -175,7 +213,7 @@ final class GameCell: NSView {
     }
 }
 
-/// A game being installed (progress), or whose install failed (Try Again).
+/// A game being installed (progress), or whose install was interrupted (Resume).
 @MainActor
 final class InstallableCell: NSView {
     static let identifier = NSUserInterfaceItemIdentifier("installable")
@@ -185,6 +223,7 @@ final class InstallableCell: NSView {
     private let progress = NSProgressIndicator.bar()
     private let detail = NSTextField.label(.subheadline, color: .secondaryLabelColor, monospacedDigits: true)
     private let button = NSButton(title: "Try Again…", target: nil, action: nil)
+    private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private var state: InstallableRowState?
     private var model: AppModel?
 
@@ -194,7 +233,10 @@ final class InstallableCell: NSView {
         icon.image = NSWorkspace.shared.icon(for: .applicationBundle)
         button.target = self
         button.action = #selector(install)
-        layOutRow(in: self, icon: icon, text: [name, progress, detail], trailing: [button])
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelDownload)
+        cancelButton.toolTip = "Stop this download. Downloaded data is kept for next time."
+        layOutRow(in: self, icon: icon, text: [name, progress, detail], trailing: [cancelButton, button])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -203,26 +245,52 @@ final class InstallableCell: NSView {
         self.state = state
         self.model = model
         name.stringValue = state.product.displayName
-        if case .failed(let message) = state.phase {
+        cancelButton.isHidden = !model.canCancelDownload(uid: state.product.uid)
+        detail.toolTip = nil
+        detail.textColor = .secondaryLabelColor
+        progress.isHidden = false
+        button.isHidden = false
+        switch state.phase {
+        case .failed(let message):
             progress.isHidden = true
             detail.stringValue = message
             detail.toolTip = message
             detail.textColor = .systemRed
-            button.isHidden = false
-        } else {
-            let update: UpdateProgress? = if case .updating(let update) = state.phase { update } else { nil }
+            button.title = model.canResumeDownload(uid: state.product.uid) ? "Resume" : "Try Again…"
+            button.isEnabled = true
+        case .pausing(let update), .paused(let update):
+            let pausing = if case .pausing = state.phase { true } else { false }
             progress.doubleValue = update?.fraction ?? 0
-            progress.isHidden = false
+            detail.stringValue = downloadStatus(update, label: pausing ? "Pausing…" : "Paused")
+            button.title = pausing ? "Pausing…" : "Resume"
+            button.isEnabled = !pausing && model.canResumeDownload(uid: state.product.uid)
+        case .updating(let update):
+            progress.doubleValue = update?.fraction ?? 0
             detail.stringValue = progressDescription(update, waiting: "Preparing…")
-            detail.toolTip = nil
-            detail.textColor = .secondaryLabelColor
+            button.title = "Pause"
+            button.isEnabled = model.canPauseDownload(uid: state.product.uid)
+        default:
             button.isHidden = true
         }
     }
 
     @objc private func install() {
         guard let state, let model else { return }
+        if model.canPauseDownload(uid: state.product.uid) {
+            model.pauseDownload(uid: state.product.uid)
+            return
+        }
+        if model.canResumeDownload(uid: state.product.uid) {
+            Task { await model.resumeDownload(uid: state.product.uid) }
+            return
+        }
+        guard case .failed = state.phase else { return }
         window?.contentViewController?.presentAsSheet(InstallSheet(product: state.product, model: model))
+    }
+
+    @objc private func cancelDownload() {
+        guard let state, let model else { return }
+        model.cancelDownload(uid: state.product.uid)
     }
 }
 
@@ -263,4 +331,9 @@ private func progressDescription(_ progress: UpdateProgress?, waiting: String) -
     let done = ByteCountFormatter.string(fromByteCount: Int64(progress.completedBytes), countStyle: .file)
     let total = ByteCountFormatter.string(fromByteCount: Int64(progress.totalBytes), countStyle: .file)
     return "\(Int(progress.fraction * 100))% · \(done) of \(total)"
+}
+
+private func downloadStatus(_ progress: UpdateProgress?, label: String) -> String {
+    guard let progress else { return label }
+    return "\(label) · \(progressDescription(progress, waiting: label))"
 }

@@ -10,11 +10,14 @@ final class AppModel {
         case signingIn
         case launching
         case updating(UpdateProgress?)
+        case pausing(UpdateProgress?)
+        case paused(UpdateProgress?)
         case failed(String)
 
         static func == (a: Phase, b: Phase) -> Bool {
             switch (a, b) {
-            case (.idle, .idle), (.signingIn, .signingIn), (.launching, .launching), (.updating, .updating): true
+            case (.idle, .idle), (.signingIn, .signingIn), (.launching, .launching),
+                 (.updating, .updating), (.pausing, .pausing), (.paused, .paused): true
             case (.failed(let x), .failed(let y)): x == y
             default: false
             }
@@ -24,6 +27,8 @@ final class AppModel {
     private(set) var games: [Game] = []
     /// Game uid -> phase, so each row shows its own progress.
     private(set) var phases: [String: Phase] = [:]
+    /// Each job owns its task and retains the original install/update options.
+    private var downloads: [String: DownloadJob] = [:]
     private(set) var running: Set<String> = []
     /// Game uid -> result of the last update check.
     private(set) var updates: [String: UpdateCheck] = [:]
@@ -132,27 +137,20 @@ final class AppModel {
         guard canUpdate(game) else { return }
         defer { ProcessMemory.releaseFreed() }
         Log.info(.gameUpdate, "requested", nil, ["uid": game.id, "verify": verify])
-        phases[game.id] = .updating(nil)
-        do {
+        let target = updates[game.id]?.latest
+        let job = DownloadJob(uid: game.id, category: .gameUpdate) { progress in
             try BattleNet.ensureNotRunning() // ask before downloading anything
             let updater = GameUpdate(install: game.install)
-            let plan = try await updater.plan(target: updates[game.id]?.latest, verify: verify)
+            let plan = try await updater.plan(target: target, verify: verify)
             // A CASC game's new build can need no new files and still have to
             // be recorded (configs, .build.info).
             if !plan.isEmpty || plan.target.buildConfig != game.install.buildConfig {
-                try await updater.apply(plan) { [weak self] progress in
-                    Task { @MainActor in
-                        if case .updating = self?.phases[game.id] { self?.phases[game.id] = .updating(progress) }
-                    }
-                }
+                try await updater.apply(plan, progress: progress)
             }
-            reload()
-            await checkForUpdates(force: true)
-            phases[game.id] = .idle
-        } catch {
-            Log.error(.gameUpdate, "failed", nil, ["uid": game.id, "error": error])
-            phases[game.id] = .failed(String(describing: error))
         }
+        phases.removeValue(forKey: game.id)
+        downloads[game.id] = job
+        await runDownload(job, uid: game.id)
     }
 
     // MARK: Installs
@@ -162,7 +160,7 @@ final class AppModel {
         InstallableProduct.all.filter { product in !games.contains { $0.install.uid == product.uid } }
     }
 
-    func phase(of product: InstallableProduct) -> Phase { phases[product.uid] ?? .idle }
+    func phase(of product: InstallableProduct) -> Phase { phase(uid: product.uid) }
 
     /// What a fresh install would download, for the install sheet.
     func installSize(_ product: InstallableProduct, folder: URL, region: Region, language: String) async throws -> UInt64 {
@@ -174,41 +172,73 @@ final class AppModel {
         defer { ProcessMemory.releaseFreed() }
         guard !isBusy(uid: product.uid) else { return }
         Log.notice(.install, "requested", nil, ["uid": product.uid, "path": folder.path, "region": region.rawValue, "language": language])
-        phases[product.uid] = .updating(nil)
-        do {
+        let job = DownloadJob(uid: product.uid, category: .install) { progress in
             try BattleNet.ensureNotRunning() // ask before downloading anything
             let installer = GameInstaller(product: product, folder: folder, region: region, language: language)
             let plan = try await installer.plan()
-            try await installer.apply(plan) { [weak self] progress in
-                Task { @MainActor in
-                    if case .updating = self?.phases[product.uid] { self?.phases[product.uid] = .updating(progress) }
-                }
-            }
+            try await installer.apply(plan, progress: progress)
             Log.notice(.install, "finished", nil, ["uid": product.uid, "version": plan.version, "path": folder.path])
-            phases[product.uid] = .idle
+        }
+        phases.removeValue(forKey: product.uid)
+        downloads[product.uid] = job
+        await runDownload(job, uid: product.uid)
+    }
+
+    private func runDownload(_ job: DownloadJob, uid: String) async {
+        if await job.run() == .completed, downloads[uid] === job {
+            downloads.removeValue(forKey: uid)
             reload()
             await checkForUpdates(force: true)
-        } catch {
-            Log.error(.install, "failed", nil, ["uid": product.uid, "path": folder.path, "error": error])
-            phases[product.uid] = .failed(String(describing: error))
+        }
+    }
+
+    func canPauseDownload(uid: String) -> Bool { downloads[uid]?.canPause == true }
+
+    func pauseDownload(uid: String) { downloads[uid]?.pause() }
+
+    func canCancelDownload(uid: String) -> Bool { downloads[uid]?.canCancel == true }
+
+    /// Stop tracking a paused job. Its verified data stays available for a
+    /// later install/update; no writer is active when canCancel is true.
+    func cancelDownload(uid: String) {
+        guard canCancelDownload(uid: uid) else { return }
+        downloads.removeValue(forKey: uid)
+        phases.removeValue(forKey: uid)
+        Log.notice(.cdn, "cancelled", "keeping downloaded data", ["uid": uid])
+    }
+
+    func canResumeDownload(uid: String) -> Bool {
+        downloads[uid]?.canResume == true && !running.contains(uid)
+    }
+
+    func resumeDownload(uid: String) async {
+        guard canResumeDownload(uid: uid), let job = downloads[uid] else { return }
+        defer { ProcessMemory.releaseFreed() }
+        Log.notice(.cdn, "resume_requested", nil, ["uid": uid])
+        await runDownload(job, uid: uid)
+    }
+
+    private func phase(uid: String) -> Phase {
+        guard let job = downloads[uid] else { return phases[uid] ?? .idle }
+        switch job.state {
+        case .ready, .running: return .updating(job.progress)
+        case .pausing: return .pausing(job.progress)
+        case .paused: return .paused(job.progress)
+        case .failed(let message): return .failed(message)
+        case .completed: return .idle
         }
     }
 
     private func isBusy(uid: String) -> Bool {
-        switch phases[uid] ?? .idle {
-        case .signingIn, .launching, .updating: true
+        switch phase(uid: uid) {
+        case .signingIn, .launching, .updating, .pausing, .paused: true
         default: false
         }
     }
 
-    func phase(of game: Game) -> Phase { phases[game.id] ?? .idle }
+    func phase(of game: Game) -> Phase { phase(uid: game.id) }
 
-    func isBusy(_ game: Game) -> Bool {
-        switch phase(of: game) {
-        case .signingIn, .launching, .updating: true
-        default: false
-        }
-    }
+    func isBusy(_ game: Game) -> Bool { isBusy(uid: game.id) }
 
     /// Only one sign-in at a time: the login window and the hidden web view
     /// each serve a single request.
@@ -232,6 +262,7 @@ final class AppModel {
         }
         Log.info(.launch, "requested", nil, ["uid": game.id, "version": game.install.version ?? "?",
                                              "force_sign_in": forceSignIn, "play_as": accountID != nil])
+        downloads.removeValue(forKey: game.id)
         do {
             let plan = try GameLauncher.plan(for: game, region: regionOverride)
             phases[game.id] = .signingIn
@@ -251,7 +282,7 @@ final class AppModel {
             phases[game.id] = .idle
         } catch {
             Log.error(.launch, "failed", nil, ["uid": game.id, "error": error])
-            phases[game.id] = .failed(String(describing: error))
+            phases[game.id] = .failed(errorMessage(error))
         }
     }
 

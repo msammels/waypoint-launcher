@@ -58,7 +58,10 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         for game in model.games where game.isSupported {
-            if let update = model.availableUpdate(for: game), GameUpdate.canUpdate(game.install) {
+            if let item = downloadItem(uid: game.id, name: game.displayName, phase: model.phase(of: game)) {
+                menu.addItem(item)
+                addCancelDownload(to: menu, uid: game.id, name: game.displayName)
+            } else if let update = model.availableUpdate(for: game), GameUpdate.canUpdate(game.install) {
                 menu.addItem(ActionItem("Update \(game.displayName) to \(update.latest.name)",
                                         enabled: model.canUpdate(game)) { [model] in
                     Task { await model.update(game) }
@@ -68,6 +71,12 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
                 menu.addItem(ActionItem(title, enabled: model.canPlay(game)) { [model] in
                     Task { await model.play(game) }
                 })
+            }
+        }
+        for product in model.installable {
+            if let item = downloadItem(uid: product.uid, name: product.displayName, phase: model.phase(of: product)) {
+                menu.addItem(item)
+                addCancelDownload(to: menu, uid: product.uid, name: product.displayName)
             }
         }
         menu.addItem(.separator())
@@ -84,6 +93,29 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         })
         menu.addItem(ActionItem("Rescan Games") { [model] in model.reload() })
         menu.addItem(NSMenuItem(title: "Quit Waypoint", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    private func addCancelDownload(to menu: NSMenu, uid: String, name: String) {
+        guard model.canCancelDownload(uid: uid) else { return }
+        menu.addItem(ActionItem("Cancel \(name) Download") { [model] in model.cancelDownload(uid: uid) })
+    }
+
+    private func downloadItem(uid: String, name: String, phase: AppModel.Phase) -> NSMenuItem? {
+        switch phase {
+        case .updating:
+            return ActionItem("Pause \(name)", enabled: model.canPauseDownload(uid: uid)) { [model] in
+                model.pauseDownload(uid: uid)
+            }
+        case .pausing:
+            return ActionItem("Pausing \(name)…", enabled: false) {}
+        case .failed where !model.canResumeDownload(uid: uid):
+            return nil
+        case .paused, .failed:
+            return ActionItem("Resume \(name)", enabled: model.canResumeDownload(uid: uid)) { [model] in
+                Task { await model.resumeDownload(uid: uid) }
+            }
+        default: return nil
+        }
     }
 }
 

@@ -121,7 +121,7 @@ final class InstallSheet: NSViewController {
             sizeText.textColor = .labelColor
             sizeText.toolTip = nil
         case .failure(let error):
-            sizeText.stringValue = String(describing: error)
+            sizeText.stringValue = errorMessage(error)
             sizeText.textColor = .systemRed
             sizeText.toolTip = sizeText.stringValue
         }

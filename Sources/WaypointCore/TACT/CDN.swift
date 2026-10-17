@@ -28,8 +28,19 @@ public struct ProductVersion: Sendable, Equatable, Codable {
 /// Blizzard's patch service: which build is live, and where the CDN is.
 public struct VersionService: Sendable {
     public var session: URLSession
+    var retry = NetworkRetry()
 
-    public init(session: URLSession = .shared) {
+    /// Offline requests use the bounded retry policy, so planning and size
+    /// checks can report an error instead of waiting for the resource timeout.
+    public static let defaultSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = false
+        // A deliberate low speed limit can make a large file take hours.
+        configuration.timeoutIntervalForResource = 24 * 60 * 60
+        return URLSession(configuration: configuration)
+    }()
+
+    public init(session: URLSession = VersionService.defaultSession) {
         self.session = session
     }
 
@@ -62,6 +73,7 @@ public struct VersionService: Sendable {
         }
         guard !servers.isEmpty else { throw TACTError.notFound("HTTPS CDN for \(product)") }
         var client = CDNClient(product: product, path: path, servers: servers, session: session)
+        client.retry = retry
         client.configPath = row["ConfigPath"].flatMap { $0.isEmpty ? nil : $0 }
         client.hosts = (row["Hosts"] ?? "").split(separator: " ").map(String.init)
         client.serversField = row["Servers"] ?? ""
@@ -71,11 +83,13 @@ public struct VersionService: Sendable {
     private func table(product: String, file: String, region: Region) async throws -> BPSV {
         let host = region == .cn ? "us" : region.rawValue
         let url = URL(string: "https://\(host).version.battle.net/v2/products/\(product)/\(file)")!
-        let (data, response) = try await session.data(from: url)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw TACTError.network("\(url.absoluteString): HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)")
+        return try await retry.run { _ in
+            let (data, response) = try await session.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw HTTPFailure(status: (response as? HTTPURLResponse)?.statusCode ?? 0, url: url)
+            }
+            return BPSV(String(decoding: data, as: UTF8.self))
         }
-        return BPSV(String(decoding: data, as: UTF8.self))
     }
 }
 
@@ -93,8 +107,10 @@ public struct CDNClient: Sendable {
     /// The cdns table's Hosts and Servers columns, verbatim, for `.build.info`.
     public var hosts: [String] = []
     public var serversField = ""
+    var retry = NetworkRetry()
+    var bandwidthLimiter: DownloadBandwidthLimiter = .shared
 
-    public init(product: String, path: String, servers: [URL], session: URLSession = .shared,
+    public init(product: String, path: String, servers: [URL], session: URLSession = VersionService.defaultSession,
                 cacheDirectory: URL = CDNClient.defaultCacheDirectory) {
         self.product = product
         self.path = path
@@ -189,61 +205,126 @@ public struct CDNClient: Sendable {
     }
 
     public func fetch(_ kind: Kind, _ hash: String, suffix: String = "") async throws -> Data {
-        try await withMirrors(kind, hash, suffix: suffix, range: nil) { request in
-            let (data, response) = try await session.data(for: request)
-            try Self.check(response, request, expectPartial: false)
-            return data
-        }
+        let file = try await download(kind, hash, suffix: suffix)
+        defer { try? FileManager.default.removeItem(at: file) }
+        return try Data(contentsOf: file)
     }
 
     /// Downloads to a temporary file. `range` is an inclusive byte range
     /// inside an archive.
     public func download(_ kind: Kind, _ hash: String, suffix: String = "", range: ClosedRange<UInt64>? = nil) async throws -> URL {
-        try await withMirrors(kind, hash, suffix: suffix, range: range) { request in
-            let (file, response) = try await session.download(for: request)
+        // Resume data belongs to one URL, never another mirror. Archive
+        // slices restart their bounded batch: URLSession's resume Range may
+        // otherwise extend past the requested end of the archive slice.
+        var resumeData: [URL: Data] = [:]
+        return try await withMirrors(kind, hash, suffix: suffix, range: range) { request in
+            let url = request.url!
+            let saved = resumeData.removeValue(forKey: url)
+            var resumed = false
+            var file: URL
+            var response: URLResponse
             do {
-                try Self.check(response, request, expectPartial: range != nil)
+                let result = try await Self.resumeOrRestart(saved) { data in
+                    if data != nil { Log.info(.cdn, "download_resuming", nil, ["url": url.absoluteString]) }
+                    return try await DownloadTransfer(limiter: bandwidthLimiter)
+                        .download(session: session, request: request, resumeData: data)
+                }
+                (file, response, resumed) = result
+            } catch {
+                if range == nil, let data = (error as? URLError)?.downloadTaskResumeData { resumeData[url] = data }
+                throw error
+            }
+            do {
+                // A resumed whole file can have a 206 response, with the
+                // temporary file containing both the original and new bytes.
+                try Self.check(response, request, expectPartial: range != nil, resumed: resumed)
+                if let range {
+                    let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                    let contentRange = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Range") ?? ""
+                    guard size.map(UInt64.init) == range.upperBound - range.lowerBound + 1,
+                          contentRange.hasPrefix("bytes \(range.lowerBound)-\(range.upperBound)/") else {
+                        throw TACTError.malformed("CDN archive range response")
+                    }
+                }
             } catch {
                 try? FileManager.default.removeItem(at: file)
                 throw error
             }
-            // The system deletes `file` when this call returns; keep our own copy.
-            let kept = FileManager.default.temporaryDirectory.appendingPathComponent("waypoint-\(UUID().uuidString)")
-            try FileManager.default.moveItem(at: file, to: kept)
-            return kept
+            // DownloadTransfer already owns this temporary file. The caller
+            // moves it into the cache or removes it after decoding.
+            return file
         }
+    }
+
+    /// A rejected/stale resume may need one fresh attempt. Failures from
+    /// that fresh attempt belong to the outer retry policy, never this catch.
+    static func resumeOrRestart(_ data: Data?,
+                                perform: (Data?) async throws -> (URL, URLResponse)) async throws -> (URL, URLResponse, Bool) {
+        if let data {
+            var result: (URL, URLResponse)?
+            do {
+                result = try await perform(data)
+            } catch {
+                if Task.isCancelled || NetworkRetry.isCancellation(error) || NetworkRetry.isTransient(error) { throw error }
+            }
+            if let result {
+                let status = (result.1 as? HTTPURLResponse)?.statusCode
+                if status != 412 && status != 416 { return (result.0, result.1, true) }
+                try? FileManager.default.removeItem(at: result.0)
+            }
+        }
+        let result = try await perform(nil)
+        return (result.0, result.1, false)
     }
 
     private func withMirrors<T>(_ kind: Kind, _ hash: String, suffix: String, range: ClosedRange<UInt64>?,
                                 _ body: (URLRequest) async throws -> T) async throws -> T {
-        var lastError: Error = TACTError.network("no CDN mirrors")
-        for server in servers {
-            var request = URLRequest(url: server.appendingPathComponent(relativePath(kind, hash, suffix: suffix)))
-            request.timeoutInterval = 60
-            if let range { request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range") }
-            for attempt in 0..<2 {
-                do {
-                    return try await body(request)
-                } catch let error as TACTError {
-                    Log.warning(.cdn, "request_failed", nil, ["url": request.url?.absoluteString ?? "?", "attempt": attempt + 1,
-                                                              "range": range.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "", "error": error])
-                    if case .notFound = error { lastError = error; break } // try the next mirror
-                    lastError = error
-                } catch {
-                    Log.warning(.cdn, "request_failed", nil, ["url": request.url?.absoluteString ?? "?", "attempt": attempt + 1, "error": error])
-                    lastError = error
+        var unavailable = Set<URL>()
+        do {
+            return try await retry.run { attempt in
+                var lastError: Error = TACTError.network("no CDN mirrors")
+                var transient: Error?
+                for server in servers where !unavailable.contains(server) {
+                    try Task.checkCancellation()
+                    var request = URLRequest(url: server.appendingPathComponent(relativePath(kind, hash, suffix: suffix)))
+                    request.timeoutInterval = 60
+                    if let range { request.setValue("bytes=\(range.lowerBound)-\(range.upperBound)", forHTTPHeaderField: "Range") }
+                    do {
+                        return try await body(request)
+                    } catch {
+                        if Task.isCancelled || NetworkRetry.isCancellation(error) { throw error }
+                        let ns = error as NSError
+                        if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorCancelled { throw error }
+                        Log.warning(.cdn, "request_failed", nil, ["url": request.url?.absoluteString ?? "?", "attempt": attempt + 1,
+                                                                  "range": range.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "", "error": error])
+                        if NetworkRetry.isTransient(error) {
+                            transient = error
+                        } else if error is HTTPFailure {
+                            unavailable.insert(server)
+                        } else if case TACTError.notFound = error {
+                            unavailable.insert(server)
+                        } else {
+                            throw error // disk, integrity and other local failures won't improve on another mirror
+                        }
+                        lastError = error
+                    }
                 }
-                if attempt == 0 { try await Task.sleep(for: .seconds(1)) }
+                throw transient ?? lastError
             }
+        } catch {
+            if !(error is CancellationError), (error as NSError).code != NSURLErrorCancelled {
+                Log.error(.cdn, "all_mirrors_failed", nil, ["path": relativePath(kind, hash, suffix: suffix), "error": error])
+            }
+            throw error
         }
-        Log.error(.cdn, "all_mirrors_failed", nil, ["path": relativePath(kind, hash, suffix: suffix), "error": lastError])
-        throw lastError
     }
 
-    private static func check(_ response: URLResponse, _ request: URLRequest, expectPartial: Bool) throws {
+    private static func check(_ response: URLResponse, _ request: URLRequest, expectPartial: Bool, resumed: Bool = false) throws {
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let url = request.url?.absoluteString ?? "?"
         if status == 404 { throw TACTError.notFound(url) }
-        guard status == (expectPartial ? 206 : 200) else { throw TACTError.network("\(url): HTTP \(status)") }
+        guard status == (expectPartial ? 206 : 200) || (resumed && status == 206) else {
+            throw HTTPFailure(status: status, url: request.url!)
+        }
     }
 }

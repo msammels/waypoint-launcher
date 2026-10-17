@@ -117,6 +117,14 @@ Rejected logins, CAPTCHA and two-factor prompts pause automatic login and open t
 
 To install a game, click **+** in the toolbar and pick it. Choose where it goes (`/Applications` by default), the language and the region; the sheet shows the real download size. Progress shows in the game's row.
 
+Click **Pause** beside an install or update to stop downloading. The row shows **Pausing…** until active requests and file writes have stopped, then **Paused** with its progress and a **Resume** button. Resume keeps the same folder, language, region and verification options, reusing completed files and stored game data. These actions are also available in the optional menu bar item.
+
+To stop an unfinished download, pause it and click **Cancel**. Downloaded data is kept for a later attempt, and an installed game returns to its normal Play/Update controls.
+
+To leave bandwidth for other apps, open **Settings…** (⌘,) and move the **Download speed** slider. Choose a speed from **250 KB/s** to **100 MB/s**, or **Unlimited** (the default). The limit covers all game downloads combined, applies immediately and is remembered for next time.
+
+Temporary connection and server failures retry automatically with increasing delays. If a download still stops, **Resume** continues with the same folder, language and region, reusing completed files and stored game data. After quitting Waypoint, select the same game and install folder again to continue an unfinished install. Whole-file transfers use resume data when available; an unfinished archive batch is downloaded again.
+
 When a new version is out, **Play** turns into **Update**, with a progress bar while it downloads.
 
 Right-click the button for more:

@@ -130,17 +130,23 @@ public struct GameUpdater: Sendable {
         if !verify, let installed = install.buildConfig {
             if installed == target.buildConfig {
                 previous = Dictionary(wanted.map { ($0.path, $0.contentKey) }, uniquingKeysWith: { a, _ in a })
-            } else if let oldConfig = try? await config(installed, cdn),
-                      let oldManifest = try? await installManifest(oldConfig, cdn) {
-                previous = Dictionary(oldManifest.select(tagString: tags).filter { only?($0.path) ?? true }
-                                        .map { ($0.path, $0.contentKey) },
-                                      uniquingKeysWith: { a, _ in a })
             } else {
-                log("Installed build's manifest is gone from the CDN; checking files by hash")
-                Log.warning(.gameUpdate, "old_manifest_missing", "falling back to hashing local files", ["uid": install.uid, "build_config": installed])
+                do {
+                    let oldConfig = try await config(installed, cdn)
+                    let oldManifest = try await installManifest(oldConfig, cdn)
+                    previous = Dictionary(oldManifest.select(tagString: tags).filter { only?($0.path) ?? true }
+                                            .map { ($0.path, $0.contentKey) },
+                                          uniquingKeysWith: { a, _ in a })
+                } catch {
+                    if NetworkRetry.isCancellation(error) { throw error }
+                    try Task.checkCancellation()
+                    log("Installed build's manifest is gone from the CDN; checking files by hash")
+                    Log.warning(.gameUpdate, "old_manifest_missing", "falling back to hashing local files", ["uid": install.uid, "build_config": installed])
+                }
             }
         }
 
+        try Task.checkCancellation()
         let fm = FileManager.default
         let (changed, deletions) = try Self.diff(
             wanted: wanted,
@@ -184,6 +190,7 @@ public struct GameUpdater: Sendable {
     /// for their loose files and record the whole install themselves).
     public func apply(_ plan: UpdatePlan, record: Bool = true,
                       progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
+        try Task.checkCancellation()
         let started = Date()
         guard RunningProcesses.inside(root).isEmpty else {
             Log.warning(.gameUpdate, "apply_refused", "game is running", ["uid": install.uid])
@@ -222,6 +229,8 @@ public struct GameUpdater: Sendable {
 
         // Everything is verified; swap it in (unless Battle.net started meanwhile:
         // the staged files stay, and the next try picks them up).
+        // Observe pause here, then finish the synchronous commit as a whole.
+        try Task.checkCancellation()
         guard RunningProcesses.inside(root).isEmpty else { throw UpdateError.gameRunning }
         try BattleNet.ensureNotRunning()
         var remainingUses = Dictionary(plan.files.map { ($0.contentKey, 1) }, uniquingKeysWith: +)
@@ -270,6 +279,7 @@ public struct GameUpdater: Sendable {
                      localHash: (String, Int) throws -> Data) throws -> (changed: [InstallManifest.Entry], deletions: [String]) {
         var changed: [InstallManifest.Entry] = []
         for (index, entry) in wanted.enumerated() {
+            if index % 256 == 0 { try Task.checkCancellation() }
             if localSize(entry.path) != entry.size {
                 changed.append(entry)
             } else if let previous {
@@ -292,6 +302,7 @@ public struct GameUpdater: Sendable {
     }
 
     private func stage(_ file: UpdatePlan.File, cdn: CDNClient) async throws {
+        try Task.checkCancellation()
         let staged = stagedURL(file.contentKey)
         let fm = FileManager.default
         if let size = try? fm.attributesOfItem(atPath: staged.path)[.size] as? UInt64, size == file.size,
@@ -357,10 +368,12 @@ public struct GameUpdater: Sendable {
     }
 
     static func md5(of file: URL) throws -> Data {
+        try Task.checkCancellation()
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var md5 = Insecure.MD5()
         while let chunk = try handle.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
             md5.update(data: chunk)
         }
         return Data(md5.finalize())

@@ -1,12 +1,15 @@
 import AppKit
 import WaypointCore
 
-/// Settings (⌘,): the region games sign in to, and the opt-in menu bar item.
+/// Settings (⌘,): sign-in, download speed and the opt-in menu bar item.
 @MainActor
 final class SettingsViewController: NSViewController {
     private let model: AppModel
     private let regionPopup = NSPopUpButton()
     private let menuBarCheckbox = NSButton(checkboxWithTitle: "Show Waypoint in the menu bar", target: nil, action: nil)
+    private let speedSlider = NSSlider(value: Double(DownloadSpeedLimit.choices.count - 1), minValue: 0,
+                                       maxValue: Double(DownloadSpeedLimit.choices.count - 1), target: nil, action: nil)
+    private let speedValue = NSTextField.label(.body, monospacedDigits: true)
     private let accountLabel = NSTextField(labelWithString: "")
     private let savedLoginNote = NSTextField(wrappingLabelWithString: "")
     private let saveLoginButton = NSButton(title: "Save Login…", target: nil, action: nil)
@@ -30,6 +33,22 @@ final class SettingsViewController: NSViewController {
         regionNote.stringValue = "The Battle.net region games sign in to."
         menuBarCheckbox.target = self
         menuBarCheckbox.action = #selector(menuBarChanged)
+        speedSlider.numberOfTickMarks = DownloadSpeedLimit.choices.count
+        speedSlider.allowsTickMarkValuesOnly = true
+        speedSlider.isContinuous = true
+        speedSlider.target = self
+        speedSlider.action = #selector(speedChanged)
+        speedSlider.setAccessibilityLabel("Download speed limit")
+        speedValue.alignment = .right
+        speedValue.widthAnchor.constraint(equalToConstant: 90).isActive = true
+        speedSlider.widthAnchor.constraint(equalToConstant: 220).isActive = true
+        let speedRow = NSStackView(views: [speedSlider, speedValue])
+        speedRow.spacing = 10
+        let speedNote = NSTextField(wrappingLabelWithString: "Total for all game downloads. Changes apply immediately.")
+        speedNote.font = .preferredFont(forTextStyle: .subheadline)
+        speedNote.textColor = .secondaryLabelColor
+        speedNote.preferredMaxLayoutWidth = 320
+        speedNote.widthAnchor.constraint(equalToConstant: 320).isActive = true
         saveLoginButton.target = self
         saveLoginButton.action = #selector(saveLogin)
         forgetLoginButton.target = self
@@ -46,6 +65,8 @@ final class SettingsViewController: NSViewController {
             [NSTextField(labelWithString: "Region:"), regionPopup],
             [NSGridCell.emptyContentView, regionNote],
             [NSTextField(labelWithString: "Menu bar:"), menuBarCheckbox],
+            [NSTextField(labelWithString: "Download speed:"), speedRow],
+            [NSGridCell.emptyContentView, speedNote],
             [NSTextField(labelWithString: "Account:"), accountLabel],
             [NSGridCell.emptyContentView, savedLoginNote],
             [NSGridCell.emptyContentView, loginButtons],
@@ -56,6 +77,7 @@ final class SettingsViewController: NSViewController {
         grid.columnSpacing = 8
         grid.row(at: 2).topPadding = 12
         grid.row(at: 3).topPadding = 12
+        grid.row(at: 5).topPadding = 12
 
         let container = NSView()
         grid.translatesAutoresizingMaskIntoConstraints = false
@@ -73,9 +95,13 @@ final class SettingsViewController: NSViewController {
         // ⌘-dragging the item out of the menu bar turns the setting off.
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.renderMenuBar() }
+            MainActor.assumeIsolated {
+                self?.renderMenuBar()
+                self?.renderSpeed()
+            }
         }
         renderMenuBar()
+        renderSpeed()
     }
 
     private func renderRegion() {
@@ -94,6 +120,20 @@ final class SettingsViewController: NSViewController {
 
     @objc private func menuBarChanged() {
         UserDefaults.standard.set(menuBarCheckbox.state == .on, forKey: MenuBarItem.defaultsKey)
+    }
+
+    private func renderSpeed() {
+        let limit = DownloadSpeedLimit.load()
+        speedSlider.integerValue = DownloadSpeedLimit.choices.firstIndex(of: limit)!
+        speedValue.stringValue = limit.label
+        speedSlider.setAccessibilityValueDescription(limit.label)
+        DownloadBandwidthLimiter.shared.bytesPerSecond = limit.bytesPerSecond
+    }
+
+    @objc private func speedChanged() {
+        let index = min(max(speedSlider.integerValue, 0), DownloadSpeedLimit.choices.count - 1)
+        DownloadSpeedLimit.choices[index].save()
+        renderSpeed()
     }
 
     private func renderSavedLogin() {
