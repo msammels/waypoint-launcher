@@ -42,7 +42,7 @@ func resolveInstall(_ args: [String], usage: String) -> (ProductInstall, Install
     var positional: [String] = []
     var i = 0
     while i < args.count {
-        if ["--path", "--state"].contains(args[i]) { i += 2; continue }
+        if ["--path", "--state", "--language", "--speech"].contains(args[i]) { i += 2; continue }
         if !args[i].hasPrefix("--") { positional.append(args[i]) }
         i += 1
     }
@@ -79,12 +79,26 @@ func cleanup(_ args: [String]) async {
     }
 }
 
-/// `update <uid> [--path root] [--state file] [--verify] [--dry-run]`
+/// `update <uid> [--path root] [--state file] [--verify] [--language xxXX [--speech xxXX]] [--dry-run]`.
+/// With `--language`, the game switches to that text language (and spoken
+/// language: `--speech`, else the same).
 func update(_ args: [String]) async {
-    let (install, store) = resolveInstall(args, usage: "usage: waypoint-cli update <uid> [--path install-root] [--state file] [--verify] [--dry-run]")
+    let usage = "usage: waypoint-cli update <uid> [--path install-root] [--state file] [--verify] [--language xxXX [--speech xxXX]] [--dry-run]"
+    let (install, store) = resolveInstall(args, usage: usage)
+    var languages: GameLanguages?
+    if let text = option("--language", in: args) {
+        languages = GameLanguages(text: text, speech: option("--speech", in: args))
+    } else if option("--speech", in: args) != nil {
+        fail(usage)
+    }
+    if let languages, let product = InstallableProduct.forProduct(install.productCode) {
+        checkLanguages(languages, for: product)
+    }
     let updater = GameUpdate(install: install, store: store)
     do {
-        let plan = try await updater.plan(verify: args.contains("--verify"), log: log)
+        let plan = try await updater.plan(verify: args.contains("--verify"), languages: languages, log: log)
+        let from = install.languages
+        if let languages { print("languages: text \(from.text) → \(languages.text), speech \(from.speech) → \(languages.speech)") }
         print("target: \(plan.target.name)")
         print("download: \(plan.fileCount) files, \(byteString(plan.downloadSize))")
         print("delete: \(plan.deletions.count) files")
@@ -95,7 +109,8 @@ func update(_ args: [String]) async {
             for file in p.loose.files.prefix(10) { print("  + \(file.path) (\(byteString(file.size)))") }
         }
         for path in plan.deletions.prefix(10) { print("  - \(path)") }
-        guard !args.contains("--dry-run"), !plan.isEmpty || plan.target.buildConfig != install.buildConfig else { return }
+        guard !args.contains("--dry-run"),
+              !plan.isEmpty || plan.target.buildConfig != install.buildConfig || (languages != nil && languages != from) else { return }
         try await updater.apply(plan) { p in
             log(String(format: "%.1f%%  %@ / %@  (%d/%d files)", p.fraction * 100,
                        byteString(p.completedBytes), byteString(p.totalBytes), p.completedFiles, p.totalFiles))
@@ -103,6 +118,15 @@ func update(_ args: [String]) async {
         print("installed \(plan.target.name)")
     } catch {
         fail("\(error)")
+    }
+}
+
+func checkLanguages(_ languages: GameLanguages, for product: InstallableProduct) {
+    if let unknown = [languages.text, languages.speech].first(where: { !product.languages.contains($0) }) {
+        fail("\(product.displayName) has no \(unknown); pick one of \(product.languages.joined(separator: " "))")
+    }
+    if languages.speech != languages.text, !product.hasSpokenLanguage {
+        fail("\(product.displayName) has no separate spoken language: a second one would only add its files")
     }
 }
 
@@ -127,17 +151,17 @@ func fetch(_ args: [String]) async {
     }
 }
 
-/// `install <uid> <dir> [--language xxXX] [--region eu] [--only regex] [--dry-run] [--state file]`:
+/// `install <uid> <dir> [--language xxXX] [--speech xxXX] [--region eu] [--only regex] [--dry-run] [--state file]`:
 /// installs a game from scratch into `<dir>` (its install root, e.g. /Applications/World of Warcraft).
 func install(_ args: [String]) async {
-    let usage = "usage: waypoint-cli install <uid> <dir> [--language enUS] [--region eu|us|kr|cn] [--only regex] [--dry-run] [--state file]"
+    let usage = "usage: waypoint-cli install <uid> <dir> [--language enUS] [--speech enUS] [--region eu|us|kr|cn] [--only regex] [--dry-run] [--state file]"
         + "\n  uids: " + InstallableProduct.all.map(\.uid).joined(separator: " ")
     var positional: [String] = []
     var options: [String: String] = [:]
     var flags: Set<String> = []
     var i = 0
     while i < args.count {
-        if ["--language", "--region", "--only", "--state", "--dump-keys"].contains(args[i]), i + 1 < args.count {
+        if ["--language", "--speech", "--region", "--only", "--state", "--dump-keys"].contains(args[i]), i + 1 < args.count {
             options[args[i]] = args[i + 1]
             i += 2
             continue
@@ -149,15 +173,15 @@ func install(_ args: [String]) async {
           let product = InstallableProduct.all.first(where: { $0.uid == positional[0] || $0.productCode == positional[0] })
     else { fail(usage) }
     guard let region = options["--region"].map({ Region(rawValue: $0) }) ?? Region.preferred(games: GameLibrary().games()) else { fail(usage) }
-    let language = options["--language"] ?? product.defaultLanguage()
-    guard product.languages.contains(language) else { fail("\(product.displayName) has no \(language); pick one of \(product.languages.joined(separator: " "))") }
+    let languages = GameLanguages(text: options["--language"] ?? product.defaultLanguage(), speech: options["--speech"])
+    checkLanguages(languages, for: product)
     let pattern = options["--only"]
     if let pattern, (try? NSRegularExpression(pattern: pattern)) == nil { fail("bad regex") }
 
     let store = options["--state"].map { InstallStateStore(file: URL(fileURLWithPath: $0)) } ?? InstallStateStore()
     let installer = GameInstaller(product: product, folder: URL(fileURLWithPath: positional[1]).standardizedFileURL,
-                                  region: region, language: language, store: store)
-    print("\(product.displayName) → \(installer.folder.path) (\(region.displayName), \(language))")
+                                  region: region, languages: languages, store: store)
+    print("\(product.displayName) → \(installer.folder.path) (\(region.displayName), text \(languages.text), speech \(languages.speech))")
     do {
         var only: (@Sendable (String) -> Bool)?
         if let pattern {

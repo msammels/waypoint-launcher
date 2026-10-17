@@ -55,11 +55,15 @@ public struct ProductConfig: Sendable, Equatable {
             || (all["update_method"] as? String)?.contains("containerless") == true
     }
 
-    /// The tag string the Agent records for an install: a speech group and a
-    /// text group, both in the chosen language.
+    /// The tag string the Agent records for an install: a speech group in
+    /// the spoken language and a text group in the text language.
+    public func tagString(region: Region, languages: GameLanguages) -> String {
+        let common = (platformTags + extraTags + ["\(region.launchOptionValue)?"]).joined(separator: " ")
+        return "\(common) \(languages.speech) speech?:\(common) \(languages.text) text?"
+    }
+
     public func tagString(region: Region, language: String) -> String {
-        let common = (platformTags + extraTags + ["\(region.launchOptionValue)?", language]).joined(separator: " ")
-        return "\(common) speech?:\(common) text?"
+        tagString(region: region, languages: GameLanguages(text: language))
     }
 }
 

@@ -26,6 +26,11 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
     /// Game languages, as Blizzard locale codes.
     public var languages: [String]
 
+    /// Whether the spoken language can differ from the text language. Only
+    /// WoW's manifests keep speech and text files apart (and its Config.wtf
+    /// has `audioLocale`); elsewhere a second language adds all its files.
+    public var hasSpokenLanguage: Bool { GameCatalog.family(for: productCode) == .worldOfWarcraft }
+
     static let commonLanguages = ["enUS", "deDE", "esES", "esMX", "frFR", "itIT", "koKR", "plPL", "ptBR", "ruRU", "zhCN", "zhTW"]
 
     public static let hearthstone = InstallableProduct(
@@ -70,9 +75,13 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
     public static func forProduct(_ code: String) -> InstallableProduct? { all.first { $0.productCode == code } }
 
     /// The install record for a fresh install into `folder`.
-    public func install(at folder: URL, region: Region, language: String, tagString: String) -> ProductInstall {
+    public func install(at folder: URL, region: Region, languages: GameLanguages, tagString: String) -> ProductInstall {
         ProductInstall(uid: uid, productCode: productCode, installPath: folder.standardizedFileURL.path,
-                       region: region.rawValue, textLanguage: language, tagString: tagString)
+                       region: region.rawValue, textLanguage: languages.text, speechLanguage: languages.speech, tagString: tagString)
+    }
+
+    public func install(at folder: URL, region: Region, language: String, tagString: String) -> ProductInstall {
+        install(at: folder, region: region, languages: GameLanguages(text: language), tagString: tagString)
     }
 
     /// The game language closest to the user's preferred languages.

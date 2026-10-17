@@ -153,6 +153,42 @@ final class AppModel {
         await runDownload(job, uid: game.id)
     }
 
+    // MARK: Languages
+
+    /// What switching `game` to `languages` downloads (with the update, when
+    /// one is waiting), for the language sheet.
+    func languageChangeSize(_ game: Game, to languages: GameLanguages) async throws -> UInt64 {
+        defer { ProcessMemory.releaseFreed() }
+        do {
+            return try await GameUpdate(install: game.install).plan(target: updates[game.id]?.latest, languages: languages).downloadSize
+        } catch {
+            if !Task.isCancelled {
+                Log.warning(.gameUpdate, "language_size_failed", nil, ["uid": game.id, "error": error])
+            }
+            throw error
+        }
+    }
+
+    /// Switches `game` to other text and spoken languages: their files come
+    /// down like an update's (with the update, when one is waiting), and the
+    /// game is told (`.build.info`, WoW's Config.wtf, the launch locale).
+    func changeLanguages(_ game: Game, to languages: GameLanguages) async {
+        guard canUpdate(game), languages != game.install.languages else { return }
+        defer { ProcessMemory.releaseFreed() }
+        Log.notice(.gameUpdate, "languages_requested", nil, ["uid": game.id, "text": languages.text, "speech": languages.speech,
+                                                            "from_text": game.install.languages.text,
+                                                            "from_speech": game.install.languages.speech])
+        let target = updates[game.id]?.latest
+        let job = DownloadJob(uid: game.id, category: .gameUpdate) { progress in
+            try BattleNet.ensureNotRunning() // ask before downloading anything
+            let updater = GameUpdate(install: game.install)
+            try await updater.apply(try await updater.plan(target: target, languages: languages), progress: progress)
+        }
+        phases.removeValue(forKey: game.id)
+        downloads[game.id] = job
+        await runDownload(job, uid: game.id)
+    }
+
     // MARK: Installs
 
     /// Games Waypoint can install that aren't installed yet.
@@ -165,10 +201,10 @@ final class AppModel {
     /// What an install would download, for the install sheet, and what an
     /// interrupted install into that folder already has.
     func installSize(_ product: InstallableProduct, folder: URL, region: Region,
-                     language: String) async throws -> (download: UInt64, stored: UInt64) {
+                     languages: GameLanguages) async throws -> (download: UInt64, stored: UInt64) {
         defer { ProcessMemory.releaseFreed() }
         do {
-            let plan = try await GameInstaller(product: product, folder: folder, region: region, language: language).plan()
+            let plan = try await GameInstaller(product: product, folder: folder, region: region, languages: languages).plan()
             return (plan.downloadSize, plan.storedBytes)
         } catch {
             if !Task.isCancelled {
@@ -178,13 +214,14 @@ final class AppModel {
         }
     }
 
-    func install(_ product: InstallableProduct, folder: URL, region: Region, language: String) async {
+    func install(_ product: InstallableProduct, folder: URL, region: Region, languages: GameLanguages) async {
         defer { ProcessMemory.releaseFreed() }
         guard !isBusy(uid: product.uid) else { return }
-        Log.notice(.install, "requested", nil, ["uid": product.uid, "path": folder.path, "region": region.rawValue, "language": language])
+        Log.notice(.install, "requested", nil, ["uid": product.uid, "path": folder.path, "region": region.rawValue,
+                                                "language": languages.text, "speech_language": languages.speech])
         let job = DownloadJob(uid: product.uid, category: .install) { progress in
             try BattleNet.ensureNotRunning() // ask before downloading anything
-            let installer = GameInstaller(product: product, folder: folder, region: region, language: language)
+            let installer = GameInstaller(product: product, folder: folder, region: region, languages: languages)
             let plan = try await installer.plan()
             try await installer.apply(plan, progress: progress)
             Log.notice(.install, "finished", nil, ["uid": product.uid, "version": plan.version, "path": folder.path])

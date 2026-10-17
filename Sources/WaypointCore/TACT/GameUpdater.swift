@@ -29,6 +29,10 @@ public struct UpdatePlan: Sendable {
     public var files: [File]
     /// Files the old build had and the new one doesn't.
     public var deletions: [String]
+    /// The install's languages are new (an install, or a language change).
+    public var setsLanguages = false
+    /// A language change: the tags it replaces.
+    public var replacedTags: String?
 
     public var downloadSize: UInt64 { files.reduce(0) { $0 + $1.size } }
     public var isEmpty: Bool { files.isEmpty && deletions.isEmpty }
@@ -103,8 +107,10 @@ public struct GameUpdater: Sendable {
 
     /// Works out what to download and delete. With `verify`, every file is
     /// hashed instead of trusting the installed build's manifest (a repair).
-    /// `only` limits the plan to some paths (for partial downloads and tests).
-    public func plan(target requested: ProductVersion? = nil, verify: Bool = false,
+    /// With `languages`, the install switches to them: their files come, the
+    /// old languages' go. `only` limits the plan to some paths (for partial
+    /// downloads and tests).
+    public func plan(target requested: ProductVersion? = nil, verify: Bool = false, languages: GameLanguages? = nil,
                      only: (@Sendable (String) -> Bool)? = nil,
                      log: @Sendable (String) -> Void = { _ in }) async throws -> UpdatePlan {
         guard GameUpdater.canUpdate(GameCatalog.family(for: install.productCode)) else {
@@ -118,26 +124,28 @@ public struct GameUpdater: Sendable {
             target = try await versions.latest(product: install.productCode, region: region)
         }
         let cdn = try await versions.cdn(product: install.productCode, region: region)
-        let tags = install.tagString ?? "OSX \(region.launchOptionValue) \(install.textLanguage ?? "enUS")"
+        let installedTags = install.tagString ?? TagLanguages.replacing(in: "OSX \(region.launchOptionValue)", with: install.languages)
+        let planned = languages.map { install.with($0, tags: installedTags) } ?? install
+        let tags = planned.tagString ?? installedTags
 
         let buildConfig = try await config(target.buildConfig, cdn)
         let cdnConfig = try await config(target.cdnConfig, cdn)
-        let wanted = try await installManifest(buildConfig, cdn).select(tagString: tags)
-            .filter { only?($0.path) ?? true }
+        let manifest = try await installManifest(buildConfig, cdn)
+        let wanted = manifest.select(tagString: tags).filter { only?($0.path) ?? true }
         log("Build \(target.name): \(wanted.count) files for this install")
         Log.info(.gameUpdate, "plan_started", nil, ["uid": install.uid, "path": install.installPath, "from": install.version ?? "none",
                                                      "to": target.name, "verify": verify, "files": wanted.count, "filtered": only != nil])
 
-        // What the installed build had, so unchanged files can be skipped without hashing.
+        // What the installed build had in the installed languages, so
+        // unchanged files can be skipped without hashing.
         var previous: [String: Data]?
         if !verify, let installed = install.buildConfig {
-            if installed == target.buildConfig {
+            if installed == target.buildConfig, tags == installedTags {
                 previous = Dictionary(wanted.map { ($0.path, $0.contentKey) }, uniquingKeysWith: { a, _ in a })
             } else {
                 do {
-                    let oldConfig = try await config(installed, cdn)
-                    let oldManifest = try await installManifest(oldConfig, cdn)
-                    previous = Dictionary(oldManifest.select(tagString: tags).filter { only?($0.path) ?? true }
+                    let oldManifest = try await installed == target.buildConfig ? manifest : installManifest(config(installed, cdn), cdn)
+                    previous = Dictionary(oldManifest.select(tagString: installedTags).filter { only?($0.path) ?? true }
                                             .map { ($0.path, $0.contentKey) },
                                           uniquingKeysWith: { a, _ in a })
                 } catch {
@@ -166,7 +174,9 @@ public struct GameUpdater: Sendable {
         guard !changed.isEmpty else {
             Log.info(.gameUpdate, "plan_ready", "nothing to download", ["uid": install.uid, "to": target.name, "deletions": deletions.count,
                                                                        "duration_ms": Int(Date().timeIntervalSince(started) * 1000)])
-            return UpdatePlan(install: install, target: target, cdn: cdn, files: [], deletions: deletions)
+            return UpdatePlan(install: planned, target: target, cdn: cdn, files: [], deletions: deletions,
+                              setsLanguages: tags != installedTags || install.buildConfig == nil,
+                              replacedTags: tags != installedTags ? installedTags : nil)
         }
 
         log("Resolving \(changed.count) files")
@@ -180,7 +190,9 @@ public struct GameUpdater: Sendable {
 
         let locations = try await locate(Set(files.map(\.encodedKey)), archives: cdnConfig["archives"], cdn)
         for i in files.indices { files[i].location = locations[files[i].encodedKey] }
-        let plan = UpdatePlan(install: install, target: target, cdn: cdn, files: files, deletions: deletions)
+        let plan = UpdatePlan(install: planned, target: target, cdn: cdn, files: files, deletions: deletions,
+                              setsLanguages: tags != installedTags || install.buildConfig == nil,
+                              replacedTags: tags != installedTags ? installedTags : nil)
         Log.info(.gameUpdate, "plan_ready", nil, ["uid": install.uid, "to": target.name, "files": files.count, "bytes": plan.downloadSize,
                                                  "in_archives": locations.count, "deletions": deletions.count,
                                                  "duration_ms": Int(Date().timeIntervalSince(started) * 1000)])
@@ -262,7 +274,8 @@ public struct GameUpdater: Sendable {
         }
         if record {
             try store.record(uid: install.uid, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name,
-                                                              install: plan.install))
+                                                              install: plan.install, chosenLanguages: plan.setsLanguages,
+                                                              replacedTags: plan.replacedTags))
         }
         try? fm.removeItem(at: stagingDirectory)
         Log.notice(.gameUpdate, "apply_finished", nil, ["uid": install.uid, "version": plan.target.name, "files": plan.files.count,
@@ -477,15 +490,26 @@ public struct InstalledBuild: Codable, Sendable, Equatable {
     public var installPath: String?
     public var region: String?
     public var textLanguage: String?
+    public var speechLanguage: String?
     public var tagString: String?
+    /// Waypoint picked these languages (an install or a language change), so
+    /// they win over what Battle.net recorded for the same build…
+    public var chosenLanguages: Bool?
+    /// …as long as Battle.net's records still show the tags they replaced
+    /// (or none): a language picked in Battle.net afterwards wins.
+    public var replacedTags: String?
 
-    public init(buildConfig: String, version: String, install: ProductInstall? = nil) {
+    public init(buildConfig: String, version: String, install: ProductInstall? = nil,
+                chosenLanguages: Bool = false, replacedTags: String? = nil) {
         self.buildConfig = buildConfig
         self.version = version
+        self.chosenLanguages = chosenLanguages ? true : nil
+        self.replacedTags = chosenLanguages ? replacedTags : nil
         productCode = install?.productCode
         installPath = install?.installPath
         region = install?.region
         textLanguage = install?.textLanguage
+        speechLanguage = install?.speechLanguage
         tagString = install?.tagString
     }
 
@@ -493,8 +517,8 @@ public struct InstalledBuild: Codable, Sendable, Equatable {
     public func install(uid: String) -> ProductInstall? {
         guard let productCode, let installPath else { return nil }
         return ProductInstall(uid: uid, productCode: productCode, installPath: installPath, region: region,
-                              textLanguage: textLanguage, version: version, buildConfig: buildConfig,
-                              tagString: tagString)
+                              textLanguage: textLanguage, speechLanguage: speechLanguage, version: version,
+                              buildConfig: buildConfig, tagString: tagString)
     }
 }
 
@@ -513,6 +537,17 @@ public struct InstallStateStore: Sendable {
 
     public func record(uid: String, _ build: InstalledBuild) throws {
         var all = load()
+        var build = build
+        if let old = all[uid], old.chosenLanguages == true {
+            if build.chosenLanguages == true {
+                // Changed again: Battle.net's records still show what they did.
+                build.replacedTags = old.replacedTags
+            } else if old.tagString == build.tagString {
+                // An update in the same languages keeps them Waypoint's choice.
+                build.chosenLanguages = true
+                build.replacedTags = old.replacedTags
+            }
+        }
         all[uid] = build
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
@@ -526,13 +561,23 @@ public struct InstallStateStore: Sendable {
     }
 
     /// Applies what Waypoint installed on top of what Battle.net recorded,
-    /// unless Battle.net has since installed something newer.
+    /// unless Battle.net has since installed something newer: the build, and
+    /// the languages when Waypoint changed them.
     public func apply(to install: ProductInstall) -> ProductInstall {
         guard let build = load()[install.uid] else { return install }
+        // Another copy of the same game (a test install elsewhere) isn't this one.
+        func standardized(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.path }
+        if let path = build.installPath, standardized(path) != standardized(install.installPath) { return install }
         if let theirs = install.version, Self.compare(theirs, build.version) == .orderedDescending { return install }
         var updated = install
         updated.buildConfig = build.buildConfig
         updated.version = build.version
+        if build.chosenLanguages == true, let tags = build.tagString,
+           install.tagString == nil || install.tagString == build.replacedTags {
+            updated.tagString = tags
+            updated.textLanguage = build.textLanguage ?? updated.textLanguage
+            updated.speechLanguage = build.speechLanguage ?? updated.speechLanguage
+        }
         return updated
     }
 

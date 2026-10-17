@@ -56,7 +56,8 @@ public enum GameLauncher {
             workingDirectory: workingDirectory,
             codename: product.codename,
             region: region,
-            locale: game.install.textLanguage
+            // Unknown: leave whatever Battle.net set.
+            locale: game.install.tagString.flatMap(TagLanguages.text(in:)) ?? game.install.textLanguage
         )
     }
 

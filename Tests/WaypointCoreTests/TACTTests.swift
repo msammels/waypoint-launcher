@@ -175,24 +175,49 @@ private func selectFixture(_ tagString: String) -> [String] {
     #expect(selectFixture("") == tagFixturePaths)
 }
 
+private func tagFixtureData() -> Data {
+    var tagData = Data()
+    for tag in tagFixture {
+        tagData += Data(tag.name.utf8) + Data([0]) + be(UInt64(tag.type), 2) + tagMask(tag.entries, count: tagFixturePaths.count)
+    }
+    return tagData
+}
+
+/// The fixture as an install manifest: file i has key i and size i + 1.
+private func tagFixtureInstallManifest() throws -> InstallManifest {
+    var install = Data("IN".utf8) + Data([1, 16]) + be(UInt64(tagFixture.count), 2) + be(UInt64(tagFixturePaths.count), 4) + tagFixtureData()
+    for (i, path) in tagFixturePaths.enumerated() {
+        install += Data(path.utf8) + Data([0]) + key(UInt8(i)) + be(UInt64(i + 1), 4)
+    }
+    return try InstallManifest(install)
+}
+
 @Test func tagSelectionThroughBothManifests() throws {
     let count = tagFixturePaths.count
     let tagString = "OSX EU? deDE speech?:OSX EU? enUS text?"
-    var tagData = Data()
-    for tag in tagFixture {
-        tagData += Data(tag.name.utf8) + Data([0]) + be(UInt64(tag.type), 2) + tagMask(tag.entries, count: count)
-    }
-
-    var install = Data("IN".utf8) + Data([1, 16]) + be(UInt64(tagFixture.count), 2) + be(UInt64(count), 4) + tagData
-    for (i, path) in tagFixturePaths.enumerated() {
-        install += Data(path.utf8) + Data([0]) + key(UInt8(i)) + be(UInt64(i), 4)
-    }
-    #expect(try InstallManifest(install).select(tagString: tagString).map(\.path) == ["base", "de/speech", "en/text"])
+    let tagData = tagFixtureData()
+    #expect(try tagFixtureInstallManifest().select(tagString: tagString).map(\.path) == ["base", "de/speech", "en/text"])
 
     var download = Data("DL".utf8) + Data([1, 16, 0]) + be(UInt64(count), 4) + be(UInt64(tagFixture.count), 2)
     for i in 0..<count { download += key(UInt8(i)) + be(UInt64(i), 5) + Data([0]) }
     download += tagData
     #expect(try DownloadManifest(download).select(tagString: tagString).map(\.size) == [0, 3, 6])
+}
+
+/// A language change diffs the new languages' files against the installed
+/// ones': the new text comes, the old text goes, shared files and the
+/// unchanged spoken language stay.
+@Test func languageChangeDownloadsTheNewLanguageAndDeletesTheOld() throws {
+    let manifest = try tagFixtureInstallManifest()
+    let installed = "OSX EU? acct-CZE? enUS speech?:OSX EU? acct-CZE? enUS text?"
+    let wanted = manifest.select(tagString: TagLanguages.replacing(in: installed, with: GameLanguages(text: "deDE", speech: "enUS")))
+    let onDisk = manifest.select(tagString: installed)
+    let previous = Dictionary(onDisk.map { ($0.path, $0.contentKey) }, uniquingKeysWith: { a, _ in a })
+    let sizes = Dictionary(onDisk.map { ($0.path, $0.size) }, uniquingKeysWith: { a, _ in a })
+    let (changed, deletions) = try GameUpdater.diff(wanted: wanted, previous: previous, localSize: { sizes[$0] },
+                                                    localHash: { _, _ in Issue.record("nothing needs hashing"); return Data() })
+    #expect(changed.map(\.path) == ["de/text"])
+    #expect(deletions == ["en/text"])
 }
 
 // MARK: - Encoding
@@ -345,4 +370,39 @@ func liveUpdateFromPreviousBuild() async throws {
     let verify = try await GameUpdater(install: updated, store: store).plan(target: latest, verify: true, only: only)
     #expect(verify.files.isEmpty)
     #expect(!fm.fileExists(atPath: root.appendingPathComponent(".waypoint-staging").path))
+}
+
+/// Switches a slice of live Hearthstone from English to German on the same
+/// build: the German strings come, the English go, shared files stay, and
+/// the record says German, chosen in Waypoint.
+/// Run with `WAYPOINT_NETWORK_TESTS=1 xcrun swift test --filter liveLanguageChange`.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["WAYPOINT_NETWORK_TESTS"] == "1"))
+func liveLanguageChange() async throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("waypoint-live-\(UUID().uuidString)")
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+    let store = InstallStateStore(file: root.appendingPathComponent(".state.json"))
+    let english = "Strings/enUS/GLOBAL.txt", german = "Strings/deDE/GLOBAL.txt", shared = "Data/OSX/dbf.unity3d"
+    let only: @Sendable (String) -> Bool = { [english, german, shared].contains($0) }
+    func exists(_ path: String) -> Bool { fm.fileExists(atPath: root.appendingPathComponent(path).path) }
+    let tags = "OSX base dbf strings essential EU? enUS speech?:OSX base dbf strings essential EU? enUS text?"
+    let fresh = ProductInstall(uid: "hs_beta", productCode: "hsb", installPath: root.path, region: "eu", textLanguage: "enUS", tagString: tags)
+    let latest = try await VersionService().latest(product: "hsb", region: .eu)
+
+    let first = GameUpdater(install: fresh, store: store)
+    try await first.apply(try await first.plan(target: latest, only: only))
+    #expect(exists(english) && exists(shared) && !exists(german))
+
+    let installed = try #require(store.load()["hs_beta"]?.install(uid: "hs_beta"))
+    let change = GameUpdater(install: installed, store: store)
+    let plan = try await change.plan(target: latest, languages: GameLanguages(text: "deDE"), only: only)
+    #expect(plan.files.map(\.path) == [german])
+    #expect(plan.deletions == [english])
+    #expect(plan.setsLanguages && plan.replacedTags == tags)
+    try await change.apply(plan)
+    #expect(exists(german) && exists(shared) && !exists(english))
+    let record = try #require(store.load()["hs_beta"])
+    #expect(record.chosenLanguages == true)
+    #expect(record.install(uid: "hs_beta")?.languages == GameLanguages(text: "deDE"))
 }

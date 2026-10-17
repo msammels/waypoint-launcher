@@ -11,6 +11,7 @@ public struct ProductInstall: Equatable, Sendable {
     /// Region the game was installed for: `eu`, `us`, `kr`, `cn`.
     public var region: String?
     public var textLanguage: String?
+    public var speechLanguage: String?
     public var version: String?
     /// Build config hash of the installed build.
     public var buildConfig: String?
@@ -18,13 +19,14 @@ public struct ProductInstall: Equatable, Sendable {
     public var tagString: String?
 
     public init(uid: String, productCode: String, installPath: String,
-                region: String? = nil, textLanguage: String? = nil, version: String? = nil,
+                region: String? = nil, textLanguage: String? = nil, speechLanguage: String? = nil, version: String? = nil,
                 buildConfig: String? = nil, tagString: String? = nil) {
         self.uid = uid
         self.productCode = productCode
         self.installPath = installPath
         self.region = region
         self.textLanguage = textLanguage
+        self.speechLanguage = speechLanguage
         self.version = version
         self.buildConfig = buildConfig
         self.tagString = tagString
@@ -38,7 +40,8 @@ public struct ProductInstall: Equatable, Sendable {
 ///   Database        { repeated ProductInstall installs = 1; }
 ///   ProductInstall  { uid = 1; product_code = 2; UserSettings settings = 3;
 ///                     CachedProductState cached_product_state = 4; }
-///   UserSettings    { install_path = 1; play_region = 2; selected_text_language = 6; }
+///   UserSettings    { install_path = 1; play_region = 2; selected_text_language = 6;
+///                     selected_speech_language = 7; }
 ///   CachedProductState { BaseProductState base_product_state = 1; }
 ///   BaseProductState   { current_version_str = 7; completed_build_keys = 12;
 ///                        active_build_key = 14; active_tag_string = 17; }
@@ -82,6 +85,7 @@ public enum ProductDB {
             installPath: path,
             region: settings[2]?.first?.string.nonEmpty,
             textLanguage: settings[6]?.first?.string.nonEmpty,
+            speechLanguage: settings[7]?.first?.string.nonEmpty,
             version: state[7]?.first?.string.nonEmpty,
             buildConfig: state[14]?.first?.string.nonEmpty ?? state[12]?.last?.string.nonEmpty,
             tagString: state[17]?.first?.string.nonEmpty

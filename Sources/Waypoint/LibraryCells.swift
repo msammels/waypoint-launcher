@@ -195,6 +195,9 @@ final class GameCell: NSView {
         menu.addItem(ActionItem("Sign In Again and Play") { Task { await model.play(game, forceSignIn: true) } })
         if GameUpdate.canUpdate(game.install) {
             menu.addItem(.separator())
+            menu.addItem(ActionItem("Change Language…") { [weak self] in
+                self?.window?.contentViewController?.presentAsSheet(LanguageSheet(game: game, model: model))
+            })
             menu.addItem(ActionItem("Verify Files") { Task { await model.update(game, verify: true) } })
         }
         return menu

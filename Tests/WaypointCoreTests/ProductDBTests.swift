@@ -11,6 +11,7 @@ private func install(_ w: inout ProtoWriter, uid: String, code: String, path: St
             s.string(2, region)
             s.varint(3, 2)
             s.string(6, "enUS")
+            s.string(7, "deDE")
         }
         p.message(4) { c in
             c.message(1) { b in
@@ -33,7 +34,8 @@ private func install(_ w: inout ProtoWriter, uid: String, code: String, path: St
     let installs = try ProductDB.parseDatabase(w.data)
     #expect(installs.map(\.uid) == ["hs_beta", "wow"])
     #expect(installs[0] == ProductInstall(uid: "hs_beta", productCode: "hsb", installPath: "/Applications/Hearthstone",
-                                          region: "eu", textLanguage: "enUS", version: "36.6.3.253932.253216"))
+                                          region: "eu", textLanguage: "enUS", speechLanguage: "deDE",
+                                          version: "36.6.3.253932.253216"))
 }
 
 @Test func parsesPerInstallFile() throws {

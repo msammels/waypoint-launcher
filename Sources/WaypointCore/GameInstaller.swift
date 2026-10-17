@@ -35,16 +35,16 @@ public struct GameInstaller: Sendable {
     public var product: InstallableProduct
     public var folder: URL
     public var region: Region
-    public var language: String
+    public var languages: GameLanguages
     public var versions: VersionService
     public var store: InstallStateStore
 
-    public init(product: InstallableProduct, folder: URL, region: Region, language: String,
+    public init(product: InstallableProduct, folder: URL, region: Region, languages: GameLanguages,
                 versions: VersionService = VersionService(), store: InstallStateStore = InstallStateStore()) {
         self.product = product
         self.folder = folder
         self.region = region
-        self.language = language
+        self.languages = languages
         self.versions = versions
         self.store = store
     }
@@ -53,8 +53,8 @@ public struct GameInstaller: Sendable {
     public func plan(only: (@Sendable (String) -> Bool)? = nil, log: @Sendable (String) -> Void = { _ in }) async throws -> GameInstallPlan {
         let target = try await versions.latest(product: product.productCode, region: region)
         let config = try await versions.productConfig(product: product.productCode, region: region, version: target)
-        let install = product.install(at: folder, region: region, language: language,
-                                      tagString: config.tagString(region: region, language: language))
+        let install = product.install(at: folder, region: region, languages: languages,
+                                      tagString: config.tagString(region: region, languages: languages))
         Log.info(.install, "plan_started", nil, ["uid": product.uid, "version": target.name, "path": folder.path,
                                                  "containerless": config.isContainerless, "data_dir": config.dataDirectory,
                                                  "subfolder": config.subfolder, "tags": install.tagString ?? ""])
@@ -145,20 +145,21 @@ public struct GameUpdate: Sendable {
         try await GameUpdater(install: install, versions: versions, store: store).check()
     }
 
-    /// With `verify`, loose files are hashed rather than trusted.
-    public func plan(target requested: ProductVersion? = nil, verify: Bool = false,
+    /// With `verify`, loose files are hashed rather than trusted. With
+    /// `languages`, the game switches to them.
+    public func plan(target requested: ProductVersion? = nil, verify: Bool = false, languages: GameLanguages? = nil,
                      log: @Sendable (String) -> Void = { _ in }) async throws -> GameUpdatePlan {
         let loose = GameUpdater(install: install, versions: versions, store: store)
         if GameCatalog.family(for: install.productCode) == .hearthstone {
-            return .loose(try await loose.plan(target: requested, verify: verify, log: log))
+            return .loose(try await loose.plan(target: requested, verify: verify, languages: languages, log: log))
         }
         guard let product = InstallableProduct.forProduct(install.productCode) else { throw UpdateError.unsupported(install.productCode) }
         let target: ProductVersion
         if let requested { target = requested } else { target = try await versions.latest(product: install.productCode, region: region) }
         let config = try await versions.productConfig(product: install.productCode, region: region, version: target)
-        if config.isContainerless { return .loose(try await loose.plan(target: target, verify: verify, log: log)) }
+        if config.isContainerless { return .loose(try await loose.plan(target: target, verify: verify, languages: languages, log: log)) }
         return .casc(try await CASCInstaller(product: product, install: install, config: config, versions: versions, store: store)
-            .plan(target: target, verify: verify, log: log))
+            .plan(target: target, verify: verify, languages: languages, log: log))
     }
 
     public func apply(_ plan: GameUpdatePlan, progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {

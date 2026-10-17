@@ -1,7 +1,7 @@
 import AppKit
 import WaypointCore
 
-/// Where, which language, which region; shows the real download size.
+/// Where, which languages, which region; shows the real download size.
 @MainActor
 final class InstallSheet: NSViewController {
     private let product: InstallableProduct
@@ -10,20 +10,23 @@ final class InstallSheet: NSViewController {
     private var sizeTask: Task<Void, Never>?
 
     private let location = NSTextField.label(.body, color: .secondaryLabelColor)
-    private let languagePopup = NSPopUpButton()
+    private let languagePicker: LanguagePicker
     private let regionPopup = NSPopUpButton()
     private let sizeSpinner = NSProgressIndicator.spinner()
     private let sizeText = NSTextField.label(.body)
     private let installButton = NSButton(title: "Install", target: nil, action: nil)
 
     private var folder: URL { parentFolder.appendingPathComponent(product.folderName, isDirectory: true) }
-    private var language: String { languagePopup.selectedItem?.representedObject as? String ?? "" }
+    private var languages: GameLanguages? { languagePicker.languages }
     private var region: Region { Region.allCases[max(regionPopup.indexOfSelectedItem, 0)] }
 
     init(product: InstallableProduct, model: AppModel) {
         self.product = product
         self.model = model
+        languagePicker = LanguagePicker(codes: product.languages, selected: GameLanguages(text: product.defaultLanguage()),
+                                        hasSpokenLanguage: product.hasSpokenLanguage)
         super.init(nibName: nil, bundle: nil)
+        languagePicker.onChange = { [weak self] in self?.refreshSize() }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -36,22 +39,13 @@ final class InstallSheet: NSViewController {
         location.lineBreakMode = .byTruncatingMiddle
         let change = NSButton(title: "Change…", target: self, action: #selector(chooseParent))
         let locationRow = NSStackView(views: [location, change])
-        for code in product.languages {
-            languagePopup.addItem(withTitle: Self.languageName(code))
-            languagePopup.lastItem?.representedObject = code
-        }
-        languagePopup.selectItem(at: product.languages.firstIndex(of: product.defaultLanguage()) ?? 0)
-        languagePopup.target = self
-        languagePopup.action = #selector(refreshSize)
         regionPopup.addItems(withTitles: Region.allCases.map(\.displayName))
         regionPopup.selectItem(at: Region.allCases.firstIndex(of: model.regionOverride ?? Region.default()) ?? 0)
         regionPopup.target = self
         regionPopup.action = #selector(refreshSize)
         sizeText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let grid = NSGridView(views: [
-            [Self.formLabel("Location:"), locationRow],
-            [Self.formLabel("Language:"), languagePopup],
+        let grid = NSGridView(views: [[Self.formLabel("Location:"), locationRow]] + languagePicker.rows + [
             [Self.formLabel("Region:"), regionPopup],
             [Self.formLabel("Download:"), NSStackView(views: [sizeSpinner, sizeText])],
         ])
@@ -65,7 +59,7 @@ final class InstallSheet: NSViewController {
         installButton.target = self
         installButton.action = #selector(install)
         installButton.keyEquivalent = "\r"
-        installButton.isEnabled = !language.isEmpty
+        installButton.isEnabled = languages != nil
         let buttons = NSStackView()
         buttons.setViews([cancel, installButton], in: .trailing)
 
@@ -91,17 +85,20 @@ final class InstallSheet: NSViewController {
         location.toolTip = folder.path
     }
 
-    /// The download size depends on language and region; asks again when
-    /// either changes, dropping an answer that's no longer wanted.
+    /// The download size depends on languages and region; asks again when
+    /// any changes, dropping an answer that's no longer wanted.
     @objc private func refreshSize() {
         sizeTask?.cancel()
-        let (product, model, folder, region, language) = (product, model, folder, region, language)
-        guard !language.isEmpty else { return }
+        let (product, model, folder, region) = (product, model, folder, region)
+        guard let languages else { return }
         show(size: nil)
         sizeTask = Task { [weak self] in
+            // A WoW plan is big: quick changes wait for the last one.
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
             let size: Result<(download: UInt64, stored: UInt64), Error>
             do {
-                size = .success(try await model.installSize(product, folder: folder, region: region, language: language))
+                size = .success(try await model.installSize(product, folder: folder, region: region, languages: languages))
             } catch {
                 size = .failure(error)
             }
@@ -149,17 +146,13 @@ final class InstallSheet: NSViewController {
     }
 
     @objc private func install() {
-        let (product, model, folder, region, language) = (product, model, folder, region, language)
-        Task { await model.install(product, folder: folder, region: region, language: language) }
+        let (product, model, folder, region) = (product, model, folder, region)
+        guard let languages else { return }
+        Task { await model.install(product, folder: folder, region: region, languages: languages) }
         dismiss(nil)
     }
 
     private static func formLabel(_ text: String) -> NSTextField {
         NSTextField(labelWithString: text)
-    }
-
-    static func languageName(_ code: String) -> String {
-        let identifier = "\(code.prefix(2))_\(code.suffix(2))"
-        return Locale.current.localizedString(forIdentifier: identifier) ?? code
     }
 }

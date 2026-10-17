@@ -48,6 +48,10 @@ public struct CASCInstallPlan: Sendable {
     public var storage: [StorageItem]
     /// Loose files from the install manifest, rooted at the flavor folder.
     public var loose: UpdatePlan
+    /// The install's languages are new (an install, or a language change).
+    public var setsLanguages = false
+    /// A language change: the tags it replaces.
+    public var replacedTags: String?
     /// Bytes of `storage` an interrupted run already wrote: still planned (the
     /// writer skips them, and progress counts them as done), not downloaded again.
     public var storedBytes: UInt64 = 0
@@ -105,14 +109,18 @@ public struct CASCInstaller: Sendable {
     // MARK: Plan
 
     /// With `verify`, loose files are hashed instead of trusting the installed
-    /// build's manifest (a repair).
-    public func plan(target requested: ProductVersion? = nil, verify: Bool = false,
+    /// build's manifest (a repair). With `languages`, the install switches to
+    /// them: storage gets their files (the old ones' stay, as for any other
+    /// build data), and loose files change over.
+    public func plan(target requested: ProductVersion? = nil, verify: Bool = false, languages: GameLanguages? = nil,
                      log: @Sendable (String) -> Void = { _ in }) async throws -> CASCInstallPlan {
         let started = Date()
         let target: ProductVersion
         if let requested { target = requested } else { target = try await versions.latest(product: install.productCode, region: region) }
         let cdn = try await versions.cdn(product: install.productCode, region: region)
-        let tags = install.tagString ?? config.tagString(region: region, language: install.textLanguage ?? "enUS")
+        let installedTags = install.tagString ?? config.tagString(region: region, languages: install.languages)
+        let planned = languages.map { install.with($0, tags: installedTags) } ?? install
+        let tags = planned.tagString ?? installedTags
 
         let buildConfigData = try await cdn.cached(.config, target.buildConfig)
         let cdnConfigData = try await cdn.cached(.config, target.cdnConfig)
@@ -123,13 +131,8 @@ public struct CASCInstaller: Sendable {
         else { throw TACTError.malformed("build config") }
 
         // Loose files, with Windows-style paths (Diablo III) normalized.
-        let looseEntries = try InstallManifest(try await cdn.decoded(installKey))
-            .select(tagString: tags)
-            .map { entry -> InstallManifest.Entry in
-                var e = entry
-                e.path = e.path.replacingOccurrences(of: "\\", with: "/")
-                return e
-            }
+        let installManifest = try InstallManifest(try await cdn.decoded(installKey))
+        let looseEntries = Self.looseEntries(installManifest, tags: tags)
         log("Build \(target.name): \(looseEntries.count) loose files")
 
         let rootKey = buildConfig["root"].first.flatMap { Data(hex: $0) }
@@ -143,10 +146,11 @@ public struct CASCInstaller: Sendable {
             }
             return key
         })
-        var looseInstall = install
+        var looseInstall = planned
         looseInstall.installPath = looseRoot.path
-        let (changed, deletions) = try await looseChanges(looseEntries, target: target, cdn: cdn, tags: tags,
-                                                          verify: verify, looseInstall: looseInstall, log: log)
+        let (changed, deletions) = try await looseChanges(looseEntries, manifest: installManifest, target: target, cdn: cdn,
+                                                          installedTags: installedTags, verify: verify,
+                                                          looseInstall: looseInstall, log: log)
         var looseFiles: [UpdatePlan.File] = changed.compactMap { entry in
             encoding.entries[entry.contentKey].map {
                 UpdatePlan.File(path: entry.path, contentKey: entry.contentKey, encodedKey: $0.encodedKey, size: entry.size, location: nil)
@@ -205,6 +209,8 @@ public struct CASCInstaller: Sendable {
             unique += 1
         }
         storage.removeLast(storage.count - unique)
+        // Room was made for every file the tags select; an update keeps few.
+        if storage.capacity > 2 * storage.count + 4096 { storage = storage.withUnsafeBufferPointer { Array($0) } }
 
         let archives = cdnConfig["archives"]
         log("Locating \(storage.count + looseFiles.count) files in \(archives.count) CDN archives")
@@ -231,9 +237,10 @@ public struct CASCInstaller: Sendable {
         }
 
         let loose = UpdatePlan(install: looseInstall, target: target, cdn: cdn, files: looseFiles, deletions: deletions)
-        let plan = CASCInstallPlan(install: install, product: product, config: config, target: target, cdn: cdn,
+        let plan = CASCInstallPlan(install: planned, product: product, config: config, target: target, cdn: cdn,
                                    buildConfig: buildConfigData, cdnConfig: cdnConfigData, archives: archives,
-                                   storage: storage, loose: loose, storedBytes: storedBytes)
+                                   storage: storage, loose: loose, setsLanguages: tags != installedTags || install.buildConfig == nil,
+                                   replacedTags: tags != installedTags ? installedTags : nil, storedBytes: storedBytes)
         Log.info(.install, "casc_plan_ready", nil, [
             "uid": install.uid, "version": target.name, "storage_files": storage.count,
             "storage_bytes": plan.storage.reduce(UInt64(0)) { $0 + $1.size }, "resumed_bytes": storedBytes, "loose_files": looseFiles.count,
@@ -349,9 +356,21 @@ public struct CASCInstaller: Sendable {
         if !config.subfolder.isEmpty {
             try write(Data("Product Flavor!STRING:0\n\(install.productCode)\n".utf8), to: looseRoot.appendingPathComponent(".flavor.info"))
         }
-        var record = install
-        record.tagString = install.tagString ?? config.tagString(region: region, language: install.textLanguage ?? "enUS")
-        try store.record(uid: install.uid, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name, install: record))
+        // WoW reads its languages from Config.wtf. Only new ones go there,
+        // so a language picked in the game survives updates. Best effort:
+        // the files are in, and the launch locale gives the text language
+        // (a locked Config.wtf mustn't fail every retry).
+        if plan.setsLanguages, GameCatalog.family(for: install.productCode) == .worldOfWarcraft {
+            do {
+                try WoWConfig.setLanguages(plan.install.languages, flavorFolder: looseRoot)
+            } catch {
+                Log.warning(.install, "config_wtf_skipped", nil, ["uid": install.uid, "error": error])
+            }
+        }
+        var record = plan.install
+        record.tagString = plan.install.tagString ?? config.tagString(region: region, languages: plan.install.languages)
+        try store.record(uid: install.uid, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name, install: record,
+                                                          chosenLanguages: plan.setsLanguages, replacedTags: plan.replacedTags))
         if storageExisted {
             // Best effort: the update itself is done either way.
             do {
@@ -489,15 +508,27 @@ public struct CASCInstaller: Sendable {
     /// Which loose files to download and delete. A fresh install downloads
     /// all of them; an update compares the installed build's install manifest
     /// (or, without it or with `verify`, hashes the files on disk).
-    private func looseChanges(_ wanted: [InstallManifest.Entry], target: ProductVersion, cdn: CDNClient, tags: String,
-                              verify: Bool, looseInstall: ProductInstall,
+    /// A manifest's files for some tags, with `/` paths.
+    static func looseEntries(_ manifest: InstallManifest, tags: String) -> [InstallManifest.Entry] {
+        manifest.select(tagString: tags).map { entry in
+            var e = entry
+            e.path = e.path.replacingOccurrences(of: "\\", with: "/")
+            return e
+        }
+    }
+
+    /// `wanted` is `manifest` (the target build's) selected with the new
+    /// tags; `installedTags` are what's on disk now.
+    private func looseChanges(_ wanted: [InstallManifest.Entry], manifest: InstallManifest, target: ProductVersion,
+                              cdn: CDNClient, installedTags: String, verify: Bool, looseInstall: ProductInstall,
                               log: @Sendable (String) -> Void) async throws -> (changed: [InstallManifest.Entry], deletions: [String]) {
         let fm = FileManager.default
         guard fm.fileExists(atPath: looseRoot.path) else { return (wanted, []) }
         var previous: [String: Data]?
         if !verify, let installed = install.buildConfig {
             if installed == target.buildConfig {
-                previous = Dictionary(wanted.map { ($0.path, $0.contentKey) }, uniquingKeysWith: { a, _ in a })
+                previous = Dictionary(Self.looseEntries(manifest, tags: installedTags).map { ($0.path, $0.contentKey) },
+                                      uniquingKeysWith: { a, _ in a })
             } else {
                 do {
                     let oldConfig = try await cdn.cached(.config, installed, localCopy: configURL(installed))
@@ -505,9 +536,8 @@ public struct CASCInstaller: Sendable {
                         throw TACTError.malformed("installed build config (no install)")
                     }
                     let oldManifest = try InstallManifest(BLTE.decode(try await cdn.cached(.data, oldInstallKey)))
-                    previous = Dictionary(oldManifest.select(tagString: tags).map {
-                        ($0.path.replacingOccurrences(of: "\\", with: "/"), $0.contentKey)
-                    }, uniquingKeysWith: { a, _ in a })
+                    previous = Dictionary(Self.looseEntries(oldManifest, tags: installedTags).map { ($0.path, $0.contentKey) },
+                                          uniquingKeysWith: { a, _ in a })
                 } catch {
                     if NetworkRetry.isCancellation(error) { throw error }
                     try Task.checkCancellation()
@@ -618,7 +648,7 @@ public struct CASCInstaller: Sendable {
     /// `.build.info`: one row per installed product; WoW flavors share it.
     private func writeBuildInfo(_ plan: CASCInstallPlan) throws {
         let header = "Branch!STRING:0|Active!DEC:1|Build Key!HEX:16|CDN Key!HEX:16|Install Key!HEX:16|IM Size!DEC:4|CDN Path!STRING:0|CDN Hosts!STRING:0|CDN Servers!STRING:0|Tags!STRING:0|Armadillo!STRING:0|Last Activated!STRING:0|Version!STRING:0|KeyRing!HEX:16|Product!STRING:0"
-        let tags = install.tagString ?? config.tagString(region: region, language: install.textLanguage ?? "enUS")
+        let tags = plan.install.tagString ?? config.tagString(region: region, languages: plan.install.languages)
         let row = [region.rawValue, "1", plan.target.buildConfig, plan.target.cdnConfig, "", "", plan.cdn.path,
                    plan.cdn.hosts.joined(separator: " "), plan.cdn.serversField, tags, "", "", plan.target.name,
                    plan.target.keyRing ?? "", install.productCode].joined(separator: "|")
