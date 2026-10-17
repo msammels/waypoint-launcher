@@ -99,7 +99,7 @@ final class InstallSheet: NSViewController {
         guard !language.isEmpty else { return }
         show(size: nil)
         sizeTask = Task { [weak self] in
-            let size: Result<UInt64, Error>
+            let size: Result<(download: UInt64, stored: UInt64), Error>
             do {
                 size = .success(try await model.installSize(product, folder: folder, region: region, language: language))
             } catch {
@@ -110,14 +110,16 @@ final class InstallSheet: NSViewController {
         }
     }
 
-    private func show(size: Result<UInt64, Error>?) {
+    private func show(size: Result<(download: UInt64, stored: UInt64), Error>?) {
         sizeSpinner.isHidden = size != nil
         if size == nil { sizeSpinner.startAnimation(nil) } else { sizeSpinner.stopAnimation(nil) }
         switch size {
         case nil:
             sizeText.stringValue = ""
         case .success(let bytes):
-            sizeText.stringValue = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+            let download = ByteCountFormatter.string(fromByteCount: Int64(bytes.download), countStyle: .file)
+            sizeText.stringValue = bytes.stored == 0 ? download
+                : "\(download) left (\(ByteCountFormatter.string(fromByteCount: Int64(bytes.stored), countStyle: .file)) already downloaded)"
             sizeText.textColor = .labelColor
             sizeText.toolTip = nil
         case .failure(let error):
@@ -138,6 +140,7 @@ final class InstallSheet: NSViewController {
         if panel.runModal() == .OK, let url = panel.url {
             parentFolder = url
             showLocation()
+            refreshSize() // another folder may hold a partial install, or not
         }
     }
 

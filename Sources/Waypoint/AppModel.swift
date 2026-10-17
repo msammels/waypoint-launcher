@@ -162,10 +162,20 @@ final class AppModel {
 
     func phase(of product: InstallableProduct) -> Phase { phase(uid: product.uid) }
 
-    /// What a fresh install would download, for the install sheet.
-    func installSize(_ product: InstallableProduct, folder: URL, region: Region, language: String) async throws -> UInt64 {
+    /// What an install would download, for the install sheet, and what an
+    /// interrupted install into that folder already has.
+    func installSize(_ product: InstallableProduct, folder: URL, region: Region,
+                     language: String) async throws -> (download: UInt64, stored: UInt64) {
         defer { ProcessMemory.releaseFreed() }
-        return try await GameInstaller(product: product, folder: folder, region: region, language: language).plan().downloadSize
+        do {
+            let plan = try await GameInstaller(product: product, folder: folder, region: region, language: language).plan()
+            return (plan.downloadSize, plan.storedBytes)
+        } catch {
+            if !Task.isCancelled {
+                Log.warning(.install, "size_failed", nil, ["uid": product.uid, "path": folder.path, "error": error])
+            }
+            throw error
+        }
     }
 
     func install(_ product: InstallableProduct, folder: URL, region: Region, language: String) async {

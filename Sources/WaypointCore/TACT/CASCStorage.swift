@@ -206,6 +206,7 @@ public final class CASCStorageWriter {
     private var archiveHandle: FileHandle?
     private var archiveSizes: [UInt64] = []
     private let baseKey: Data
+    private let lock: StorageLock
     private let journalURL: URL
     private let journal: FileHandle
     private var unsyncedBytes = 0
@@ -221,11 +222,13 @@ public final class CASCStorageWriter {
 
     /// Starts a new storage, resumes an interrupted run, or (with
     /// `allowExisting`) adds to a finished storage. Without it, a finished
-    /// storage is an error rather than something to start over on.
+    /// storage is an error rather than something to start over on. Only one
+    /// writer at a time (WoW's flavors share a storage): another one throws.
     public init(directory: URL, allowExisting: Bool = false) throws {
         self.directory = directory
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        lock = try StorageLock(directory)
         journalURL = directory.appendingPathComponent(Self.journalName)
         let saved = (try? Data(contentsOf: journalURL, options: .alwaysMapped)) ?? Data()
 
@@ -369,6 +372,7 @@ public final class CASCStorageWriter {
         try fm.removeItem(at: journalURL)
         versions = newVersions
         finished = true
+        self.lock.release()
     }
 
     // MARK: Internals
@@ -377,6 +381,16 @@ public final class CASCStorageWriter {
 
     private static func record(key: Data, archive: Int, offset: UInt64, size: UInt32, flag: UInt8) -> Data {
         key.prefix(16) + Data(CASC.le16(UInt16(archive))) + Data(CASC.le64(offset)) + Data(CASC.le32(size)) + Data([flag])
+    }
+
+    /// Whether the folder holds a new storage's journal (one without an
+    /// update marker): a first write that hasn't finished.
+    static func hasUnfinishedNewStorage(_ directory: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: directory.appendingPathComponent(journalName)) else { return false }
+        defer { try? handle.close() }
+        // Without its base key the writer ignores a journal and starts over.
+        guard let head = try? handle.read(upToCount: 16 + journalRecordSize), head.count >= 16 else { return false }
+        return marker(in: head.dropFirst(16)) == nil
     }
 
     /// An update's journal starts with a marker: where appending began.
@@ -426,8 +440,54 @@ public final class CASCStorageWriter {
         archiveSizes.append(archiveEnd)
     }
 
-    private func archiveURL(_ archive: Int) -> URL {
+    private func archiveURL(_ archive: Int) -> URL { Self.archiveURL(archive, in: directory) }
+
+    private static func archiveURL(_ archive: Int, in directory: URL) -> URL {
         directory.appendingPathComponent(String(format: "data.%03d", archive))
+    }
+
+    /// Walks a journal's blob records (after `skipping` header records) while
+    /// they can be trusted: each one's bytes made it to disk, and archives
+    /// only go forward from `archive`. Returns how many it walked.
+    private static func trustedRecords(_ records: Data, skipping header: Int, from archive: Int, in directory: URL,
+                                       _ body: (Key16, _ archive: Int, _ end: UInt64) -> Void) -> Int {
+        let size = journalRecordSize
+        let usable = records.count - records.count % size
+        var current = archive
+        var trusted = 0
+        var fileSizes: [Int: UInt64] = [:]
+        records.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var p = header * size
+            while p + size <= usable {
+                let key = Key16(base + p)
+                let arc = Int(UInt16(raw[p + 16]) | UInt16(raw[p + 17]) << 8)
+                let offset = (0..<8).reduce(UInt64(0)) { $0 | UInt64(raw[p + 18 + $1]) << (8 * UInt64($1)) }
+                let entrySize = (0..<4).reduce(UInt32(0)) { $0 | UInt32(raw[p + 26 + $1]) << (8 * UInt32($1)) }
+                let end = offset + UInt64(entrySize)
+                if fileSizes[arc] == nil {
+                    let path = archiveURL(arc, in: directory).path
+                    fileSizes[arc] = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? UInt64) ?? 0
+                }
+                guard arc >= max(current, 0), end <= fileSizes[arc] ?? 0 else { break }
+                current = arc
+                body(key, arc, end)
+                trusted += 1
+                p += size
+            }
+        }
+        return trusted
+    }
+
+    /// Calls `body` with each key an interrupted install or update already
+    /// wrote that resuming keeps (what `replay` trusts); nothing without a
+    /// journal. Only reads, so a plan can tell what's left to download.
+    static func forEachResumableKey(in directory: URL, _ body: (Key16) -> Void) {
+        guard let saved = try? Data(contentsOf: directory.appendingPathComponent(journalName), options: .alwaysMapped),
+              saved.count >= 16 else { return }
+        let records = saved.dropFirst(16)
+        let start = marker(in: records)
+        _ = trustedRecords(records, skipping: start == nil ? 0 : 1, from: start?.archive ?? -1, in: directory) { key, _, _ in body(key) }
     }
 
     private func sync() throws {
@@ -441,42 +501,22 @@ public final class CASCStorageWriter {
     /// nothing journaled yet, everything after the old end); the next write
     /// continues right there.
     private func replay(_ records: Data, skipping header: Int) throws {
-        let size = Self.journalRecordSize
-        let usable = records.count - records.count % size
         var lastArchive = -1
         var lastEnd: UInt64 = 0
-        var trusted = 0
-        var fileSizes: [Int: UInt64] = [:]
-        try records.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            var p = header * size
-            while p + size <= usable {
-                let key9 = Key9(base + p)
-                let arc = Int(UInt16(raw[p + 16]) | UInt16(raw[p + 17]) << 8)
-                let offset = (0..<8).reduce(UInt64(0)) { $0 | UInt64(raw[p + 18 + $1]) << (8 * UInt64($1)) }
-                let entrySize = (0..<4).reduce(UInt32(0)) { $0 | UInt32(raw[p + 26 + $1]) << (8 * UInt32($1)) }
-                let end = offset + UInt64(entrySize)
-                // Only trust records whose bytes made it to disk.
-                if fileSizes[arc] == nil {
-                    fileSizes[arc] = (try? FileManager.default.attributesOfItem(atPath: archiveURL(arc).path)[.size] as? UInt64) ?? 0
-                }
-                guard arc >= max(archive, 0), end <= fileSizes[arc] ?? 0 else { break }
-                while archive < arc {
-                    archive += 1
-                    archiveSizes.append(UInt64(CASC.segmentHeadersSize))
-                }
-                resumed.append(key9)
-                archiveSizes[arc] = max(archiveSizes[arc], end)
-                lastArchive = arc
-                lastEnd = end
-                trusted += 1
-                p += size
+        let trusted = Self.trustedRecords(records, skipping: header, from: archive, in: directory) { key, arc, end in
+            while archive < arc {
+                archive += 1
+                archiveSizes.append(UInt64(CASC.segmentHeadersSize))
             }
+            resumed.append(key.prefix9)
+            archiveSizes[arc] = max(archiveSizes[arc], end)
+            lastArchive = arc
+            lastEnd = end
         }
         resumed.sort()
         // Forget records whose data never reached disk, or new writes would
         // land after them and a later replay would trust overwritten bytes.
-        try journal.truncate(atOffset: UInt64(16 + (header + trusted) * size))
+        try journal.truncate(atOffset: UInt64(16 + (header + trusted) * Self.journalRecordSize))
         try journal.seekToEnd()
         if lastArchive >= 0 {
             archive = lastArchive
@@ -489,6 +529,35 @@ public final class CASCStorageWriter {
         try handle.seek(toOffset: archiveEnd)
         archiveHandle = handle
     }
+}
+
+/// One writer's hold on a storage folder, across processes too (the CLI can
+/// run next to the app): an exclusive `flock` on the folder itself, so no
+/// file is left behind. Released by `release()` or when freed.
+final class StorageLock {
+    private var fd: Int32
+
+    init(_ directory: URL) throws {
+        // Not inherited: a process started meanwhile (a game) would keep holding it.
+        fd = open(directory.path, O_RDONLY | O_CLOEXEC)
+        guard fd >= 0 else { throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: directory.path]) }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            let busy = errno == EWOULDBLOCK
+            // A filesystem without locks still gets written, as before.
+            guard !busy else {
+                close(fd)
+                throw UpdateError.storageBusy(directory.path)
+            }
+        }
+    }
+
+    func release() {
+        guard fd >= 0 else { return }
+        close(fd)
+        fd = -1
+    }
+
+    deinit { release() }
 }
 
 /// The 9-byte keys a local storage holds, sorted per index bucket and
@@ -511,7 +580,7 @@ public struct StoredKeys: Sendable {
     }
     public func contains(_ key: Key16) -> Bool { contains(key.prefix9) }
 
-    /// Nil when the folder holds no storage.
+    /// Nil when the folder holds no storage, or only an unfinished new one.
     public static func load(_ directory: URL) throws -> StoredKeys? {
         guard let state = try CASC.scanStorage(directory) else { return nil }
         var buckets = [[Key9]](repeating: [], count: 16)
@@ -612,7 +681,8 @@ extension CASC {
         var baseKey: Data?
     }
 
-    /// Nil when the folder holds no storage.
+    /// Nil when the folder holds no storage, or only a new one still being
+    /// written (archives and a journal, no complete index files yet).
     static func scanStorage(_ directory: URL) throws -> StorageState? {
         let fm = FileManager.default
         let files = (try? fm.contentsOfDirectory(atPath: directory.path)) ?? []
@@ -624,7 +694,12 @@ extension CASC {
         }
         let archiveNumbers = files.compactMap { name in name.wholeMatch(of: /data\.(\d{3})/).flatMap { Int($0.1) } }
         guard !latest.isEmpty || !archiveNumbers.isEmpty else { return nil }
-        guard latest.count == 16 else { throw TACTError.malformed("storage in \(directory.path) has \(latest.count) of 16 index files") }
+        guard latest.count == 16 else {
+            // A first install that stopped before `finish()` wrote the index
+            // files: not a storage yet. The writer resumes it from its journal.
+            if CASCStorageWriter.hasUnfinishedNewStorage(directory) { return nil }
+            throw TACTError.malformed("storage in \(directory.path) has \(latest.count) of 16 index files")
+        }
         var state = StorageState(versions: (0..<16).map { latest[$0] ?? 0 }, archiveSizes: [], baseKey: nil)
         if let highest = archiveNumbers.max() {
             state.archiveSizes = (0...highest).map { archive in
@@ -665,6 +740,9 @@ public enum CASCStorageCleaner {
     /// segment headers always stay. With `dryRun`, only counts.
     public static func clean(_ directory: URL, dryRun: Bool = false, isLive: (Key9) -> Bool) throws -> Result {
         let fm = FileManager.default
+        guard fm.fileExists(atPath: directory.path) else { return Result() }
+        let lock = try StorageLock(directory)
+        defer { lock.release() }
         guard !fm.fileExists(atPath: directory.appendingPathComponent(CASCStorageWriter.journalName).path) else {
             throw TACTError.unsupported("cleaning a storage with an unfinished install or update")
         }

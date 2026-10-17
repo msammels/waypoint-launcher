@@ -20,6 +20,15 @@ private actor DownloadSignal {
     }
 }
 
+/// Every progress report, as the operation made it.
+private final class ProgressLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reports: [UpdateProgress] = []
+
+    var last: UpdateProgress? { lock.withLock { reports.last } }
+    func append(_ progress: UpdateProgress) { lock.withLock { reports.append(progress) } }
+}
+
 private actor PausableWork {
     let started = DownloadSignal()
     let stopping = DownloadSignal()
@@ -223,7 +232,17 @@ private actor FailingWork {
     var installer = CASCInstaller(product: product, install: install, config: config, store: store)
     installer.concurrency = 1
     let executor = installer
-    let job = DownloadJob(uid: install.uid, category: .install) { try await executor.apply(plan, progress: $0) }
+    let storageDirectory = root.appendingPathComponent("Data/data")
+    let progressLog = ProgressLog()
+    // Like the app, every run plans again: what the journal holds is done.
+    let job = DownloadJob(uid: install.uid, category: .install) { progress in
+        var plan = plan
+        plan.storedBytes = CASCInstaller.storedBytes(plan.storage.sorted { $0.key < $1.key }, in: storageDirectory)
+        try await executor.apply(plan) { report in
+            progressLog.append(report)
+            progress(report)
+        }
+    }
     let run = Task { await job.run() }
     defer { job.pause() }
     for _ in 0..<200 {
@@ -233,7 +252,6 @@ private actor FailingWork {
     #expect(try server.requests().count == 2)
     job.pause()
     #expect(await run.value == .paused)
-    let storageDirectory = root.appendingPathComponent("Data/data")
     let journal = storageDirectory.appendingPathComponent(CASCStorageWriter.journalName)
     #expect(fm.fileExists(atPath: journal.path))
     #expect(!fm.fileExists(atPath: root.appendingPathComponent(".build.info").path))
@@ -244,6 +262,10 @@ private actor FailingWork {
     try tail.seekToEnd()
     try tail.write(contentsOf: Data(repeating: 0xCC, count: 4096))
     try tail.close()
+    // Resuming in the app plans again: the unfinished storage reads as none
+    // yet (no index files), and the journaled blob as already downloaded.
+    #expect(try StoredKeys.load(storageDirectory) == nil)
+    #expect(CASCInstaller.storedBytes(storage.sorted { $0.key < $1.key }, in: storageDirectory) == storage[0].size)
     try Data().write(to: server.directory.appendingPathComponent("release"))
     try await Task.sleep(for: .milliseconds(50))
     #expect(try server.requests().count == 2)
@@ -257,4 +279,8 @@ private actor FailingWork {
     #expect(try server.requests().filter { $0["file"] == firstKey }.count == 1)
     let finalSize = try #require(archive.resourceValues(forKeys: [.fileSizeKey]).fileSize)
     #expect(finalSize == originalSize + Int(storage[1].size) + CASC.headerSize)
+    // Progress after resuming counts the whole install, the reused blob included.
+    let last = try #require(progressLog.last)
+    #expect(last.totalBytes == storage.reduce(0) { $0 + $1.size })
+    #expect(last.completedBytes == last.totalBytes)
 }

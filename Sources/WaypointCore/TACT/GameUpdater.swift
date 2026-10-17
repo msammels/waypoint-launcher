@@ -50,6 +50,8 @@ public enum UpdateError: Error, CustomStringConvertible {
     case unsupported(String)
     case notEnoughSpace(needed: UInt64, available: UInt64)
     case unsafePath(String)
+    /// Another install or update is writing to this local storage.
+    case storageBusy(String)
 
     public var description: String {
         switch self {
@@ -62,6 +64,7 @@ public enum UpdateError: Error, CustomStringConvertible {
         case .notEnoughSpace(let needed, let available):
             "Not enough disk space: need \(ByteCountFormatter.string(fromByteCount: Int64(needed), countStyle: .file)), have \(ByteCountFormatter.string(fromByteCount: Int64(available), countStyle: .file))"
         case .unsafePath(let path): "Refusing to write outside the game folder: \(path)"
+        case .storageBusy(let path): "Another install or update is writing to \(path). Try again once it has finished"
         }
     }
 }

@@ -352,6 +352,113 @@ private func expectStored(_ keys: Range<Int>, in dir: URL, version: UInt32) thro
     #expect(after.count == before.count + (10..<20).reduce(0) { $0 + 30 + storageBlob($1).count })
 }
 
+/// A first install stopped before `finish()`: archives and a journal, no
+/// index files. Planning the resumed install sees no storage yet (it threw
+/// "has 0 of 16 index files", so Resume and Try Again failed). Without the
+/// journal, missing index files still mean a broken storage.
+@Test func unfinishedNewStorageIsNotAStorageYet() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("waypoint-casc-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: dir) }
+    var writer: CASCStorageWriter? = try CASCStorageWriter(directory: dir)
+    for i in 0..<10 { try writer!.append(encodedKey: storageKey(i), blob: storageBlob(i), fullKey: false) }
+    writer = nil
+    #expect(try StoredKeys.load(dir) == nil)
+
+    let resumed = try CASCStorageWriter(directory: dir)
+    #expect(!resumed.isUpdate)
+    #expect(resumed.contains(storageKey(4)))
+    try resumed.finish()
+    try expectStored(0..<10, in: dir, version: 1)
+
+    for name in try fm.contentsOfDirectory(atPath: dir.path) where name.hasSuffix(".idx") {
+        try fm.removeItem(at: dir.appendingPathComponent(name))
+    }
+    #expect(throws: TACTError.self) { try StoredKeys.load(dir) }
+    // A journal without its base key isn't one the writer resumes either.
+    let journal = dir.appendingPathComponent(CASCStorageWriter.journalName)
+    try Data(count: 10).write(to: journal)
+    #expect(throws: TACTError.self) { try StoredKeys.load(dir) }
+    try fm.removeItem(at: journal)
+
+    // An update's journal (it starts with a marker) needs the old index files.
+    let other = fm.temporaryDirectory.appendingPathComponent("waypoint-casc-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: other) }
+    let first = try CASCStorageWriter(directory: other)
+    try first.append(encodedKey: storageKey(0), blob: storageBlob(0), fullKey: false)
+    try first.finish()
+    var update: CASCStorageWriter? = try CASCStorageWriter(directory: other, allowExisting: true)
+    try update!.append(encodedKey: storageKey(1), blob: storageBlob(1), fullKey: false)
+    update = nil
+    for name in try fm.contentsOfDirectory(atPath: other.path) where name.hasSuffix(".idx") {
+        try fm.removeItem(at: other.appendingPathComponent(name))
+    }
+    #expect(throws: TACTError.self) { try StoredKeys.load(other) }
+}
+
+/// A plan counts as downloaded exactly what resuming keeps: journaled blobs
+/// whose bytes reached disk, and for an update only what it added.
+@Test func plansCountWhatResumingKeeps() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("waypoint-casc-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: dir) }
+    func resumable() -> [Key16] {
+        var keys: [Key16] = []
+        CASCStorageWriter.forEachResumableKey(in: dir) { keys.append($0) }
+        return keys.sorted()
+    }
+    func keys(_ range: Range<Int>) -> [Key16] { range.map { Key16(storageKey($0))! }.sorted() }
+    let plan = (0..<20).map { StorageItem(key: Key16(storageKey($0))!, size: UInt64(storageBlob($0).count), fullKey: false) }
+        .sorted { $0.key < $1.key }
+    func bytes(_ range: Range<Int>) -> UInt64 { range.reduce(0) { $0 + UInt64(storageBlob($1).count) } }
+    #expect(resumable().isEmpty)
+    #expect(CASCInstaller.storedBytes(plan, in: dir) == 0)
+
+    var writer: CASCStorageWriter? = try CASCStorageWriter(directory: dir)
+    for i in 0..<10 { try writer!.append(encodedKey: storageKey(i), blob: storageBlob(i), fullKey: false) }
+    writer = nil
+    // A torn write: the last blob's bytes didn't all reach disk.
+    let archive0 = dir.appendingPathComponent("data.000")
+    let size = try #require(archive0.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+    let handle = try FileHandle(forWritingTo: archive0)
+    try handle.truncate(atOffset: UInt64(size - 10))
+    try handle.close()
+    #expect(resumable() == keys(0..<9))
+    #expect(CASCInstaller.storedBytes(plan, in: dir) == bytes(0..<9))
+    let resumed = try CASCStorageWriter(directory: dir)
+    #expect(resumed.count == 9)
+    #expect(!resumed.contains(storageKey(9)))
+    try resumed.finish()
+    #expect(resumable().isEmpty)
+
+    var update: CASCStorageWriter? = try CASCStorageWriter(directory: dir, allowExisting: true)
+    for i in 9..<12 { try update!.append(encodedKey: storageKey(i), blob: storageBlob(i), fullKey: false) }
+    update = nil
+    #expect(resumable() == keys(9..<12))
+    #expect(CASCInstaller.storedBytes(plan, in: dir) == bytes(9..<12))
+}
+
+/// WoW's flavors share one storage: a second writer (or the cleaner) must
+/// not write to it while another one is, in this process or another.
+@Test func oneWriterPerStorage() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("waypoint-casc-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: dir) }
+    var writer: CASCStorageWriter? = try CASCStorageWriter(directory: dir)
+    try writer!.append(encodedKey: storageKey(0), blob: storageBlob(0), fullKey: false)
+    #expect(throws: UpdateError.self) { _ = try CASCStorageWriter(directory: dir) }
+    #expect(throws: UpdateError.self) { _ = try CASCStorageCleaner.clean(dir) { _ in true } }
+    writer = nil // paused: the journal stays, the folder is free again
+
+    let resumed = try CASCStorageWriter(directory: dir)
+    #expect(resumed.contains(storageKey(0)))
+    try resumed.append(encodedKey: storageKey(1), blob: storageBlob(1), fullKey: false)
+    try resumed.finish() // done: the next writer needn't wait for this one to be freed
+    let update = try CASCStorageWriter(directory: dir, allowExisting: true)
+    try update.finish()
+    try expectStored(0..<2, in: dir, version: 2)
+}
+
 private func expectStoredIndexesOnly(_ dir: URL, version: UInt32) throws {
     let names = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".idx") }.sorted()
     #expect(names == (0..<16).map { CASC.indexFileName(bucket: $0, version: version) })

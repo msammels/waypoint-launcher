@@ -13,6 +13,14 @@ public enum GameInstallPlan: Sendable {
         }
     }
 
+    /// What an interrupted install into the same folder already downloaded.
+    public var storedBytes: UInt64 {
+        switch self {
+        case .loose: 0
+        case .casc(let plan): plan.storedBytes
+        }
+    }
+
     public var version: String {
         switch self {
         case .loose(let plan): plan.target.name

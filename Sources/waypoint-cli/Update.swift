@@ -171,6 +171,9 @@ func install(_ args: [String]) async {
             print("version \(p.target.name): \(p.storage.count) files into \(p.config.dataDirectory)data "
                   + "(\(byteString(p.storage.reduce(0) { $0 + $1.size }))), \(p.loose.files.count) loose files "
                   + "(\(byteString(p.loose.downloadSize))); \(p.storage.filter { !$0.isInArchive }.count) outside archives")
+            if p.storedBytes > 0 {
+                print("already downloaded \(byteString(p.storedBytes)); \(byteString(p.downloadSize)) left")
+            }
         }
         // Debugging aid: the encoded keys a CASC install would store, one hex per line.
         if let dump = options["--dump-keys"], case .casc(let p) = plan {

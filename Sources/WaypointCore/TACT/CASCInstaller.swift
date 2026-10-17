@@ -48,8 +48,17 @@ public struct CASCInstallPlan: Sendable {
     public var storage: [StorageItem]
     /// Loose files from the install manifest, rooted at the flavor folder.
     public var loose: UpdatePlan
+    /// Bytes of `storage` an interrupted run already wrote: still planned (the
+    /// writer skips them, and progress counts them as done), not downloaded again.
+    public var storedBytes: UInt64 = 0
 
-    public var downloadSize: UInt64 { storage.reduce(0) { $0 + $1.size } + loose.downloadSize }
+    /// Everything the plan covers, for progress.
+    public var totalSize: UInt64 { storage.reduce(0) { $0 + $1.size } + loose.downloadSize }
+    /// What's left to download.
+    public var downloadSize: UInt64 {
+        let total = totalSize
+        return total - min(storedBytes, total)
+    }
     /// Nothing to download or delete (configs and records may still change).
     public var isEmpty: Bool { storage.isEmpty && loose.isEmpty }
 }
@@ -171,7 +180,8 @@ public struct CASCInstaller: Sendable {
         // storage already holds.
         let download = try DownloadManifest(try await cdn.decoded(downloadKey))
         let selected = download.selectionMask(tagString: tags)
-        let present = try StoredKeys.load(dataRoot.appendingPathComponent("data", isDirectory: true))
+        let storageDir = dataRoot.appendingPathComponent("data", isDirectory: true)
+        let present = try StoredKeys.load(storageDir)
         // Sized once: growing an array of a million items copies it over and over.
         storage.reserveCapacity(storage.count + selected.reduce(0) { $0 + $1.nonzeroBitCount })
         var listed = 0
@@ -212,6 +222,7 @@ public struct CASCInstaller: Sendable {
                 return true
             }
         }
+        let storedBytes = Self.storedBytes(storage, in: storageDir)
         try Task.checkCancellation()
         // Download order: archive by archive, front to back; loose CDN files last.
         storage.sort { a, b in
@@ -222,16 +233,26 @@ public struct CASCInstaller: Sendable {
         let loose = UpdatePlan(install: looseInstall, target: target, cdn: cdn, files: looseFiles, deletions: deletions)
         let plan = CASCInstallPlan(install: install, product: product, config: config, target: target, cdn: cdn,
                                    buildConfig: buildConfigData, cdnConfig: cdnConfigData, archives: archives,
-                                   storage: storage, loose: loose)
+                                   storage: storage, loose: loose, storedBytes: storedBytes)
         Log.info(.install, "casc_plan_ready", nil, [
             "uid": install.uid, "version": target.name, "storage_files": storage.count,
-            "storage_bytes": plan.storage.reduce(UInt64(0)) { $0 + $1.size }, "loose_files": looseFiles.count,
+            "storage_bytes": plan.storage.reduce(UInt64(0)) { $0 + $1.size }, "resumed_bytes": storedBytes, "loose_files": looseFiles.count,
             "loose_deletions": deletions.count, "update": present != nil, "from": install.version ?? "none",
             "unlocated": storage.reduce(0) { $0 + ($1.isInArchive ? 0 : 1) }, "archives": archives.count,
             "footprint_mb": ProcessMemory.footprintMB,
             "duration_ms": Int(Date().timeIntervalSince(started) * 1000),
         ])
         return plan
+    }
+
+    /// Bytes of `storage` (sorted by key) an interrupted install or update
+    /// already wrote to the storage in `storageDir`.
+    static func storedBytes(_ storage: [StorageItem], in storageDir: URL) -> UInt64 {
+        var total: UInt64 = 0
+        CASCStorageWriter.forEachResumableKey(in: storageDir) { key in
+            if let i = ArchiveIndexes.index(of: key, in: storage) { total += storage[i].size }
+        }
+        return total
     }
 
     // MARK: Apply
@@ -247,11 +268,13 @@ public struct CASCInstaller: Sendable {
         // drop what no installed build needs any more.
         let storageExisted = (try? CASC.scanStorage(storageDir)) != nil
 
-        let total = plan.downloadSize
+        let total = plan.totalSize
+        let needed = plan.downloadSize
         let available = (try? root.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
             .volumeAvailableCapacityForImportantUsage).flatMap { $0 }.map { UInt64($0) } ?? .max
-        guard available > total + (1 << 30) else { throw UpdateError.notEnoughSpace(needed: total, available: available) }
-        Log.notice(.install, "casc_apply_started", nil, ["uid": install.uid, "bytes": total, "path": root.path])
+        guard available > needed + (1 << 30) else { throw UpdateError.notEnoughSpace(needed: needed, available: available) }
+        Log.notice(.install, "casc_apply_started", nil, ["uid": install.uid, "bytes": needed, "resumed_bytes": plan.storedBytes,
+                                                         "path": root.path])
 
         // Configs and CDN indexes, as the Agent keeps them.
         try write(plan.buildConfig, to: configURL(plan.target.buildConfig))
