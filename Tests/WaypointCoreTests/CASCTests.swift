@@ -459,6 +459,21 @@ private func expectStored(_ keys: Range<Int>, in dir: URL, version: UInt32) thro
     try expectStored(0..<2, in: dir, version: 2)
 }
 
+/// A hold that ends within a second isn't another writer (any process being
+/// started briefly has every descriptor): taking the lock waits it out.
+@Test func storageLockWaitsOutAShortHold() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("waypoint-casc-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: dir) }
+    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    nonisolated(unsafe) let first = try StorageLock(dir)
+    DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { first.release() }
+    let started = ContinuousClock.now
+    let second = try StorageLock(dir)
+    #expect(ContinuousClock.now - started >= .milliseconds(150))
+    second.release()
+}
+
 private func expectStoredIndexesOnly(_ dir: URL, version: UInt32) throws {
     let names = try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".idx") }.sorted()
     #expect(names == (0..<16).map { CASC.indexFileName(bucket: $0, version: version) })

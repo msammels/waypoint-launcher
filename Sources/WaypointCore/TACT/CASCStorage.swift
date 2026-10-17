@@ -541,13 +541,17 @@ final class StorageLock {
         // Not inherited: a process started meanwhile (a game) would keep holding it.
         fd = open(directory.path, O_RDONLY | O_CLOEXEC)
         guard fd >= 0 else { throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: directory.path]) }
-        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            let busy = errno == EWOULDBLOCK
+        // While any process is being started, it briefly holds a copy of every
+        // descriptor, close-on-exec or not. Only a hold that lasts is a writer.
+        let deadline = ContinuousClock.now + .seconds(1)
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
             // A filesystem without locks still gets written, as before.
-            guard !busy else {
+            guard errno == EWOULDBLOCK else { return }
+            guard ContinuousClock.now < deadline else {
                 close(fd)
                 throw UpdateError.storageBusy(directory.path)
             }
+            usleep(10_000)
         }
     }
 
