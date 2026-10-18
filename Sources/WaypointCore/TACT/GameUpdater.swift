@@ -466,8 +466,13 @@ private final class ProgressCounter: @unchecked Sendable {
 /// Which processes are running from inside a folder, without AppKit.
 public enum RunningProcesses {
     public static func inside(_ folder: URL) -> [pid_t] {
-        let prefix = folder.standardizedFileURL.path + "/"
-        return executables().filter { $0.path.hasPrefix(prefix) }.map(\.pid)
+        let prefix = folder.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+        return executables().filter { process in
+            if URL(fileURLWithPath: process.path).resolvingSymlinksInPath().path.hasPrefix(prefix) { return true }
+            guard WineProcesses.isLoader(process.path), let cwd = WineProcesses.currentDirectory(of: process.pid) else { return false }
+            let path = cwd.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+            return path.hasPrefix(prefix)
+        }.map(\.pid)
     }
 
     /// Every process's executable path (those we're allowed to see).

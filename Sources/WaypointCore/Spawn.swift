@@ -24,12 +24,13 @@ enum Spawn {
         return unsafeBitCast(symbol, to: DisclaimFunction.self)
     }()
 
-    static func detached(executable: URL, arguments: [String], workingDirectory: URL) throws -> pid_t {
+    static func detached(executable: URL, arguments: [String], workingDirectory: URL,
+                         environment: [String: String]? = nil) throws -> pid_t {
         var attributes: posix_spawnattr_t?
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
         // Own process group, so signals aimed at us (Ctrl-C in a terminal) don't reach the game.
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT))
         posix_spawnattr_setpgroup(&attributes, 0)
         _ = disclaim?(&attributes, 1)
 
@@ -45,7 +46,16 @@ enum Spawn {
         defer { argv.forEach { free($0) } }
 
         var pid: pid_t = 0
-        let result = posix_spawn(&pid, executable.path, &actions, &attributes, argv, environ)
+        let envp = environment.map { $0.map { strdup("\($0.key)=\($0.value)") } + [nil] }
+        defer { envp?.forEach { free($0) } }
+        let result: Int32
+        if let envp {
+            result = envp.withUnsafeBufferPointer {
+                posix_spawn(&pid, executable.path, &actions, &attributes, argv, $0.baseAddress!)
+            }
+        } else {
+            result = posix_spawn(&pid, executable.path, &actions, &attributes, argv, environ)
+        }
         guard result == 0 else { throw Failure(errno: result) }
 
         // Reap the child when it exits so it doesn't linger as a zombie while we run.

@@ -32,3 +32,20 @@ import Testing
                            workingDirectory: URL(fileURLWithPath: "/tmp"))
     }
 }
+
+@Test func detachedSpawnUsesExplicitEnvironmentAndDoesNotInheritOpenFiles() async throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("waypoint-spawn-fds-\(UUID().uuidString)")
+    try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: dir) }
+    // Intentionally not CLOEXEC: the game must not inherit arbitrary app fds.
+    let fd = open(dir.appendingPathComponent("private").path, O_RDWR | O_CREAT, 0o600)
+    #expect(fd >= 0)
+    defer { close(fd) }
+    let out = dir.appendingPathComponent("out")
+    _ = try Spawn.detached(executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "test \"$WAYPOINT_SPAWN_TEST\" = explicit && ! test -e /dev/fd/\(fd) && echo passed > out"],
+        workingDirectory: dir, environment: ["PATH": "/usr/bin:/bin", "WAYPOINT_SPAWN_TEST": "explicit"])
+    for _ in 0..<50 where !fm.fileExists(atPath: out.path) { try await Task.sleep(for: .milliseconds(20)) }
+    #expect(try String(contentsOf: out, encoding: .utf8) == "passed\n")
+}

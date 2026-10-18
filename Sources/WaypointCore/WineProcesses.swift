@@ -1,0 +1,71 @@
+import Foundation
+import Darwin
+
+/// Wine's macOS executable is its loader, and its game has no .app bundle.
+/// Match the actual HotS core by loader, game directory and Windows argv.
+public enum WineProcesses {
+    private static let loaders: Set<String> = ["wine", "wine64", "wine-preloader", "wine64-preloader"]
+
+    static func isLoader(_ path: String) -> Bool {
+        loaders.contains(URL(fileURLWithPath: path).lastPathComponent)
+    }
+
+    public static func heroes(in directory: URL) -> [Int32] {
+        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        return RunningProcesses.executables().compactMap { process in
+            guard isLoader(process.path),
+                  currentDirectory(of: process.pid)?.resolvingSymlinksInPath().standardizedFileURL.path == root,
+                  let arguments = arguments(of: process.pid),
+                  arguments.prefix(2).contains(where: {
+                      $0.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last?.lowercased()
+                          == "heroesofthestorm_x64.exe"
+                  }) else { return nil }
+            return process.pid
+        }
+    }
+
+    static func currentDirectory(of pid: Int32) -> URL? {
+        var info = proc_vnodepathinfo()
+        guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info,
+                           Int32(MemoryLayout<proc_vnodepathinfo>.size)) == MemoryLayout<proc_vnodepathinfo>.size
+        else { return nil }
+        let path = withUnsafeBytes(of: &info.pvi_cdir.vip_path) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true)
+    }
+
+    private static func arguments(of pid: Int32) -> [String]? {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, UInt32(mib.count), nil, &size, nil, 0) == 0, size > 4, size <= 1_048_576 else { return nil }
+        var data = Data(count: size)
+        let result = data.withUnsafeMutableBytes {
+            sysctl(&mib, UInt32(mib.count), $0.baseAddress, &size, nil, 0)
+        }
+        guard result == 0 else { return nil }
+        return parseArguments(Data(data.prefix(size)))
+    }
+
+    /// KERN_PROCARGS2 includes the environment after argc strings. Never
+    /// parse, return or log that environment (it may contain credentials).
+    static func parseArguments(_ data: Data) -> [String]? {
+        guard data.count > MemoryLayout<Int32>.size else { return nil }
+        let argc = data.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
+        guard (1...64).contains(argc) else { return nil }
+        var offset = MemoryLayout<Int32>.size
+        func string() -> String? {
+            guard offset < data.count, let end = data[offset...].firstIndex(of: 0) else { return nil }
+            defer { offset = end + 1 }
+            return String(data: data[offset..<end], encoding: .utf8)
+        }
+        guard string() != nil else { return nil } // executable path
+        while offset < data.count, data[offset] == 0 { offset += 1 }
+        var arguments: [String] = []
+        for _ in 0..<argc {
+            guard let argument = string() else { return nil }
+            arguments.append(argument)
+        }
+        return arguments
+    }
+}
