@@ -22,10 +22,19 @@ public struct Game: Identifiable, Equatable, Sendable {
 
     public var runsNatively: Bool { architectures.contains(.arm64) }
 
+    public var isInstalled: Bool {
+        if install.platform == .windows {
+            return install.productCode == "hero" && FileManager.default.fileExists(atPath:
+                URL(fileURLWithPath: install.installPath).appendingPathComponent("Support64/HeroesSwitcher_x64.exe").path)
+        }
+        return appURL != nil
+    }
+
     /// Whether Waypoint knows how to log this game in without Battle.net.
     /// Intel-only games run through Rosetta when it's installed.
     public var isSupported: Bool {
-        InstallableProduct.forProduct(install.productCode) != nil && appURL != nil && (runsNatively || Rosetta.isInstalled)
+        if install.platform == .windows { return isInstalled && WindowsHeroes.isAvailable }
+        return InstallableProduct.forProduct(install.productCode) != nil && appURL != nil && (runsNatively || Rosetta.isInstalled)
     }
 }
 
@@ -72,6 +81,11 @@ public enum GameCatalog {
     }
 
     public static func game(for install: ProductInstall, fileManager: FileManager = .default) -> Game {
+        if install.platform == .windows {
+            return Game(install: install, family: .other,
+                        displayName: InstallableProduct.forProduct(install.productCode)?.displayName ?? install.productCode,
+                        appURL: nil, architectures: [.x86_64])
+        }
         let family = family(for: install.productCode)
         let root = URL(fileURLWithPath: install.installPath, isDirectory: true)
         var appURL: URL?

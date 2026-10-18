@@ -15,7 +15,7 @@ struct GameRowState {
 
 extension GameRowState {
     @MainActor init(_ game: Game, model: AppModel) {
-        self.init(game: game, phase: model.phase(of: game), isRunning: model.running.contains(game.id),
+        self.init(game: game, phase: model.phase(of: game), isRunning: model.isRunning(game),
                   update: model.availableUpdate(for: game), canPlay: model.canPlay(game),
                   canUpdate: model.canUpdate(game))
     }
@@ -41,6 +41,7 @@ final class GameCell: NSView {
     private let spinner = NSProgressIndicator.spinner()
     private let button = NSButton(title: "Play", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
+    private let edition = NSPopUpButton()
     private var iconPath: String?
     private var state: GameRowState?
     private var model: AppModel?
@@ -53,7 +54,13 @@ final class GameCell: NSView {
         cancelButton.target = self
         cancelButton.action = #selector(cancelDownload)
         cancelButton.toolTip = "Stop this download. Downloaded data is kept for next time."
-        layOutRow(in: self, icon: icon, text: [name, progress, detail], trailing: [status, spinner, cancelButton, button])
+        edition.addItems(withTitles: ["Windows (recommended)", "macOS"])
+        edition.menu?.autoenablesItems = false
+        edition.controlSize = .small
+        edition.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        edition.target = self
+        edition.action = #selector(changeEdition)
+        layOutRow(in: self, icon: icon, text: [name, edition, progress, detail], trailing: [status, spinner, cancelButton, button])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -62,11 +69,17 @@ final class GameCell: NSView {
         self.state = state
         self.model = model
         let game = state.game
-        if icon.image == nil || iconPath != game.appURL?.path {
-            iconPath = game.appURL?.path
+        let app = game.appURL ?? (game.install.productCode == "hero" ? model.heroesEdition(.macOS)?.appURL : nil)
+        if icon.image == nil || iconPath != app?.path {
+            iconPath = app?.path
             icon.image = iconPath.map { NSWorkspace.shared.icon(forFile: $0) } ?? NSWorkspace.shared.icon(for: .applicationBundle)
         }
         name.stringValue = game.displayName
+        edition.isHidden = game.install.productCode != "hero" || (!WindowsHeroes.isAvailable && model.heroesEdition(.windows) == nil)
+        edition.item(at: 0)?.title = WindowsHeroes.isAvailable ? "Windows (recommended)" : "Windows"
+        edition.item(at: 0)?.isEnabled = WindowsHeroes.isAvailable
+        edition.selectItem(at: game.install.platform == .windows ? 0 : 1)
+        edition.isEnabled = !state.isRunning && !model.isSigningIn && state.phase != .launching
         toolTip = game.install.version.map { "Version \($0)" }
 
         progress.isHidden = true
@@ -107,11 +120,13 @@ final class GameCell: NSView {
         if state.isRunning, !hasDownloadControls {
             show(status: "Running")
         } else if !game.isSupported, !hasDownloadControls {
-            show(status: game.appURL == nil ? "Not installed" : (game.runsNatively ? "Unsupported" : "Needs Rosetta"))
+            show(status: !game.isInstalled ? "Not installed" : (game.install.platform == .windows ? "Windows support unavailable" : (game.runsNatively ? "Unsupported" : "Needs Rosetta")))
         } else {
             switch state.phase {
             case .signingIn:
                 showSpinner("Signing in…")
+            case .preparingWindows:
+                showSpinner("Preparing Windows version…")
             case .launching:
                 showSpinner("Starting…")
             case .updating:
@@ -133,6 +148,18 @@ final class GameCell: NSView {
                 button.isEnabled = retry || (updates ? state.canUpdate : state.canPlay)
                 button.isHidden = false
             }
+        }
+    }
+
+    @objc private func changeEdition() {
+        guard let model, let state, state.game.install.productCode == "hero" else { return }
+        let platform: InstallPlatform = edition.indexOfSelectedItem == 0 ? .windows : .macOS
+        guard platform == .macOS || WindowsHeroes.isAvailable else { return }
+        if model.heroesEdition(platform)?.isInstalled == true {
+            model.selectHeroesEdition(platform)
+        } else if let product = InstallableProduct.forProduct("hero") {
+            edition.selectItem(at: state.game.install.platform == .windows ? 0 : 1)
+            window?.contentViewController?.presentAsSheet(InstallSheet(product: product, model: model, platform: platform))
         }
     }
 
@@ -211,7 +238,8 @@ final class GameCell: NSView {
             parts.append(version.split(separator: ".").prefix(3).joined(separator: "."))
         }
         if let region = game.install.region { parts.append(region.uppercased()) }
-        if game.appURL != nil, !game.runsNatively { parts.append("Intel") }
+        if game.install.platform == .windows { parts.append("Windows") }
+        else if game.appURL != nil, !game.runsNatively { parts.append("Intel") }
         return parts.joined(separator: " · ")
     }
 }

@@ -3,6 +3,12 @@ import Foundation
 /// Uses the Windows game's DPAPI channel inside its own Wine user profile.
 /// This never reads another prefix or copies a Battle.net account from it.
 enum WindowsLaunchOptions {
+    static func prepare(wine: URL, helper: URL, prefix: URL, environment: [String: String]) async throws {
+        try await ChildCommand.run(executable: wine, arguments: [helper.path], directory: prefix,
+                                   environment: environment, input: Data("prepare\n".utf8), successStatus: 87,
+                                   acknowledgement: Data("ok\n".utf8))
+    }
+
     static func frame(token: LoginToken, region: Region, locale: String?, launch: Bool = false) throws -> Data {
         let value = token.value
         guard value.utf8.count <= 128, value.utf8.allSatisfy({ $0 >= 32 && $0 <= 126 }),
@@ -23,10 +29,12 @@ enum WindowsLaunchOptions {
         do {
             try await ChildCommand.run(executable: wine, arguments: [helper.path], directory: prefix,
                                        environment: environment, input: input, successStatus: 87,
-                                       acknowledgement: Data("ok\n".utf8))
+                                       acknowledgement: Data("ok\n".utf8), completeOnCancellation: launch)
         } catch {
-            // Never launch on a failed hand-off, including when clearing the
-            // previous account also fails. No fallback token is read here.
+            // In launch mode a timeout may follow CreateProcessW. The owned
+            // runner must reconcile/stop its prefix before token cleanup;
+            // clearing here could race a child that is already starting.
+            if launch { throw error }
             // Cleanup must run even if the launching task was cancelled.
             await Task.detached {
                 try? await clear(wine: wine, helper: helper, prefix: prefix, environment: environment)

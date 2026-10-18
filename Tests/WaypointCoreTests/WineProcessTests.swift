@@ -10,6 +10,10 @@ import Testing
     var truncated = data.prefix(12)
     #expect(WineProcesses.parseArguments(Data(truncated)) == nil)
     truncated.removeAll()
+    var one: Int32 = 1
+    var ambiguous = withUnsafeBytes(of: &one) { Data($0) }
+    ambiguous.append(Data("/runtime/bin/wine\0\0\0\0SECRET=DUMMY\0".utf8))
+    #expect(WineProcesses.parseArguments(ambiguous) == nil)
 }
 
 @Test func processDirectoryCanIdentifyAChildWithoutItsBundle() throws {

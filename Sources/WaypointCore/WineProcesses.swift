@@ -10,15 +10,31 @@ public enum WineProcesses {
         loaders.contains(URL(fileURLWithPath: path).lastPathComponent)
     }
 
-    public static func heroes(in directory: URL) -> [Int32] {
-        let root = directory.resolvingSymlinksInPath().standardizedFileURL.path
+    public static func heroes(in directory: URL, runtime: URL? = nil) -> [Int32] {
+        matching(in: directory, runtime: runtime, names: ["heroesofthestorm_x64.exe"])
+    }
+
+    public static func heroesAndSwitcher(in directory: URL, runtime: URL? = nil) -> [Int32] {
+        matching(in: directory, runtime: runtime, names: ["heroesofthestorm_x64.exe", "heroesswitcher_x64.exe"])
+    }
+
+    static func ownedHeroesAndSwitcher(runtimeCache: URL) -> [Int32] {
+        matching(in: nil, runtime: runtimeCache, names: ["heroesofthestorm_x64.exe", "heroesswitcher_x64.exe"])
+    }
+
+    private static func matching(in directory: URL?, runtime: URL?, names: Set<String>) -> [Int32] {
+        let root = directory?.resolvingSymlinksInPath().standardizedFileURL.path
+        let runtimePath = runtime.map { $0.resolvingSymlinksInPath().standardizedFileURL.path + "/" }
         return RunningProcesses.executables().compactMap { process in
             guard isLoader(process.path),
-                  currentDirectory(of: process.pid)?.resolvingSymlinksInPath().standardizedFileURL.path == root,
+                  runtimePath == nil || URL(fileURLWithPath: process.path).resolvingSymlinksInPath().path.hasPrefix(runtimePath!),
+                  root == nil || currentDirectory(of: process.pid).map({ directory in
+                      let cwd = directory.resolvingSymlinksInPath().standardizedFileURL.path
+                      return cwd == root! || cwd.hasPrefix(root! + "/")
+                  }) == true,
                   let arguments = arguments(of: process.pid),
                   arguments.prefix(2).contains(where: {
-                      $0.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last?.lowercased()
-                          == "heroesofthestorm_x64.exe"
+                      names.contains(String($0.replacingOccurrences(of: "\\", with: "/").split(separator: "/").last ?? "").lowercased())
                   }) else { return nil }
             return process.pid
         }
@@ -47,8 +63,10 @@ public enum WineProcesses {
         return parseArguments(Data(data.prefix(size)))
     }
 
-    /// KERN_PROCARGS2 includes the environment after argc strings. Never
-    /// parse, return or log that environment (it may contain credentials).
+    /// KERN_PROCARGS2 includes the environment after argc strings. An empty
+    /// argv[0] is ambiguous with padding; reject environment-shaped first
+    /// strings and require the absolute argv[0] our Wine launches use.
+    /// Never log or expose the returned arguments outside process matching.
     static func parseArguments(_ data: Data) -> [String]? {
         guard data.count > MemoryLayout<Int32>.size else { return nil }
         let argc = data.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }
@@ -66,6 +84,11 @@ public enum WineProcesses {
             guard let argument = string() else { return nil }
             arguments.append(argument)
         }
+        guard let first = arguments.first, !first.contains("=") else { return nil }
+        let bytes = Array(first.utf8.prefix(3))
+        let windowsPath = bytes.count == 3 && ((65...90).contains(bytes[0]) || (97...122).contains(bytes[0]))
+            && bytes[1] == 58 && (bytes[2] == 92 || bytes[2] == 47)
+        guard first.hasPrefix("/") || windowsPath else { return nil }
         return arguments
     }
 }

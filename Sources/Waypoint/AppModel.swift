@@ -8,6 +8,7 @@ final class AppModel {
     enum Phase: Equatable {
         case idle
         case signingIn
+        case preparingWindows
         case launching
         case updating(UpdateProgress?)
         case pausing(UpdateProgress?)
@@ -16,7 +17,7 @@ final class AppModel {
 
         static func == (a: Phase, b: Phase) -> Bool {
             switch (a, b) {
-            case (.idle, .idle), (.signingIn, .signingIn), (.launching, .launching),
+            case (.idle, .idle), (.signingIn, .signingIn), (.preparingWindows, .preparingWindows), (.launching, .launching),
                  (.updating, .updating), (.pausing, .pausing), (.paused, .paused): true
             case (.failed(let x), .failed(let y)): x == y
             default: false
@@ -25,6 +26,11 @@ final class AppModel {
     }
 
     private(set) var games: [Game] = []
+    private var discoveredGames: [Game] = []
+    private var pendingHeroesInstall: ProductInstall?
+    private var heroesPlatform = UserDefaults.standard.string(forKey: "heroesPlatform").flatMap(InstallPlatform.init(rawValue:)) ?? .windows
+    @ObservationIgnored private var windowsSessions: [String: WindowsHeroesSession] = [:]
+    @ObservationIgnored private var windowsObservers: [Int32: any DispatchSourceProcess] = [:]
     /// Game uid -> phase, so each row shows its own progress.
     private(set) var phases: [String: Phase] = [:]
     /// Each job owns its task and retains the original install/update options.
@@ -98,9 +104,45 @@ final class AppModel {
     }
 
     func reload() {
-        games = library.games()
+        discoveredGames = library.games()
+        var all = discoveredGames
+        if let pendingHeroesInstall {
+            all.removeAll { $0.id == pendingHeroesInstall.key }
+            all.append(GameCatalog.game(for: pendingHeroesInstall))
+        }
+        let heroes = all.filter { $0.install.uid == "heroes" }
+        let preferred = WindowsHeroes.isAvailable ? heroesPlatform : .macOS
+        let selected = heroes.first { $0.install.platform == preferred } ?? heroes.first
+        var addedHeroes = false
+        games = all.filter { game in
+            guard game.install.uid == "heroes" else { return true }
+            guard !addedHeroes, game.id == selected?.id else { return false }
+            addedHeroes = true
+            return true
+        }
         refreshRunning()
         Log.info(.library, "scanned", nil, ["games": games.map { "\($0.install.uid)@\($0.install.version ?? "?")" }.joined(separator: ",")])
+    }
+
+    func heroesEdition(_ platform: InstallPlatform) -> Game? {
+        discoveredGames.first { $0.install.uid == "heroes" && $0.install.platform == platform }
+    }
+
+    func selectHeroesEdition(_ platform: InstallPlatform) {
+        heroesPlatform = platform
+        UserDefaults.standard.set(platform.rawValue, forKey: "heroesPlatform")
+        reload()
+    }
+
+    func defaultPlatform(for product: InstallableProduct) -> InstallPlatform {
+        if product.productCode == "hero" {
+            return pendingHeroesInstall?.platform ?? (WindowsHeroes.isAvailable ? .windows : .macOS)
+        }
+        return .macOS
+    }
+
+    func isRunning(_ game: Game) -> Bool {
+        game.install.uid == "heroes" ? (running.contains("heroes") || running.contains("heroes@windows")) : running.contains(game.id)
     }
 
     // MARK: Updates
@@ -111,7 +153,7 @@ final class AppModel {
     }
 
     func canUpdate(_ game: Game) -> Bool {
-        GameUpdate.canUpdate(game.install) && game.appURL != nil && !running.contains(game.id) && !isBusy(game)
+        GameUpdate.canUpdate(game.install) && game.isInstalled && !isRunning(game) && !isBusy(game)
     }
 
     /// Asks Blizzard's version service which build is live. Cheap (one small
@@ -119,7 +161,7 @@ final class AppModel {
     func checkForUpdates(force: Bool = false) async {
         if !force, let last = lastUpdateCheck, Date().timeIntervalSince(last) < 15 * 60 { return }
         lastUpdateCheck = Date()
-        for game in games where (game.family != .other || GameUpdate.canUpdate(game.install)) && game.appURL != nil {
+        for game in discoveredGames where (game.family != .other || GameUpdate.canUpdate(game.install)) && game.isInstalled {
             do {
                 let check = try await GameUpdate(install: game.install).check()
                 updates[game.id] = check
@@ -196,15 +238,15 @@ final class AppModel {
         InstallableProduct.all.filter { product in !games.contains { $0.install.uid == product.uid } }
     }
 
-    func phase(of product: InstallableProduct) -> Phase { phase(uid: product.uid) }
+    func phase(of product: InstallableProduct) -> Phase { phase(uid: defaultPlatform(for: product).installKey(uid: product.uid)) }
 
     /// What an install would download, for the install sheet, and what an
     /// interrupted install into that folder already has.
     func installSize(_ product: InstallableProduct, folder: URL, region: Region,
-                     languages: GameLanguages) async throws -> (download: UInt64, stored: UInt64) {
+                     languages: GameLanguages, platform: InstallPlatform = .macOS) async throws -> (download: UInt64, stored: UInt64) {
         defer { ProcessMemory.releaseFreed() }
         do {
-            let plan = try await GameInstaller(product: product, folder: folder, region: region, languages: languages).plan()
+            let plan = try await GameInstaller(product: product, folder: folder, region: region, languages: languages, platform: platform).plan()
             return (plan.downloadSize, plan.storedBytes)
         } catch {
             if !Task.isCancelled {
@@ -214,26 +256,35 @@ final class AppModel {
         }
     }
 
-    func install(_ product: InstallableProduct, folder: URL, region: Region, languages: GameLanguages) async {
+    func install(_ product: InstallableProduct, folder: URL, region: Region, languages: GameLanguages,
+                 platform: InstallPlatform = .macOS) async {
         defer { ProcessMemory.releaseFreed() }
-        guard !isBusy(uid: product.uid) else { return }
+        let uid = platform.installKey(uid: product.uid)
+        guard !isBusy(uid: uid) else { return }
+        if product.productCode == "hero" {
+            guard !isBusy(uid: "heroes"), !isBusy(uid: "heroes@windows") else { return }
+            pendingHeroesInstall = product.install(at: folder, region: region, languages: languages,
+                tagString: "\(platform.manifestTag) \(region.launchOptionValue) \(languages.text) text \(languages.speech) speech", platform: platform)
+            selectHeroesEdition(platform)
+        }
         Log.notice(.install, "requested", nil, ["uid": product.uid, "path": folder.path, "region": region.rawValue,
                                                 "language": languages.text, "speech_language": languages.speech])
-        let job = DownloadJob(uid: product.uid, category: .install) { progress in
+        let job = DownloadJob(uid: uid, category: .install) { progress in
             try BattleNet.ensureNotRunning() // ask before downloading anything
-            let installer = GameInstaller(product: product, folder: folder, region: region, languages: languages)
+            let installer = GameInstaller(product: product, folder: folder, region: region, languages: languages, platform: platform)
             let plan = try await installer.plan()
             try await installer.apply(plan, progress: progress)
             Log.notice(.install, "finished", nil, ["uid": product.uid, "version": plan.version, "path": folder.path])
         }
-        phases.removeValue(forKey: product.uid)
-        downloads[product.uid] = job
-        await runDownload(job, uid: product.uid)
+        phases.removeValue(forKey: uid)
+        downloads[uid] = job
+        await runDownload(job, uid: uid)
     }
 
     private func runDownload(_ job: DownloadJob, uid: String) async {
         if await job.run() == .completed, downloads[uid] === job {
             downloads.removeValue(forKey: uid)
+            if pendingHeroesInstall?.key == uid { pendingHeroesInstall = nil }
             reload()
             await checkForUpdates(force: true)
         }
@@ -250,6 +301,7 @@ final class AppModel {
     func cancelDownload(uid: String) {
         guard canCancelDownload(uid: uid) else { return }
         downloads.removeValue(forKey: uid)
+        if pendingHeroesInstall?.key == uid { pendingHeroesInstall = nil; reload() }
         phases.removeValue(forKey: uid)
         Log.notice(.cdn, "cancelled", "keeping downloaded data", ["uid": uid])
     }
@@ -278,7 +330,7 @@ final class AppModel {
 
     private func isBusy(uid: String) -> Bool {
         switch phase(uid: uid) {
-        case .signingIn, .launching, .updating, .pausing, .paused: true
+        case .signingIn, .preparingWindows, .launching, .updating, .pausing, .paused: true
         default: false
         }
     }
@@ -289,10 +341,10 @@ final class AppModel {
 
     /// Only one sign-in at a time: the login window and the hidden web view
     /// each serve a single request.
-    var isSigningIn: Bool { isAddingAccount || isManagingSavedLogin || phases.values.contains(.signingIn) }
+    var isSigningIn: Bool { isAddingAccount || isManagingSavedLogin || phases.values.contains(.signingIn) || phases.values.contains(.preparingWindows) }
 
     func canPlay(_ game: Game) -> Bool {
-        game.isSupported && !running.contains(game.id) && !isBusy(game) && !isSigningIn
+        game.isSupported && !isRunning(game) && !isBusy(game) && !isSigningIn
     }
 
     /// `forceSignIn` skips the saved token, for when the game rejects it.
@@ -311,7 +363,14 @@ final class AppModel {
                                              "force_sign_in": forceSignIn, "play_as": accountID != nil])
         downloads.removeValue(forKey: game.id)
         do {
-            let plan = try GameLauncher.plan(for: game, region: regionOverride)
+            let screen = NSScreen.main ?? NSScreen.screens.first
+            let displayID = (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? CGMainDisplayID()
+            let mode = CGDisplayCopyDisplayMode(displayID)
+            let display = mode.map { WindowsDisplay(width: $0.pixelWidth, height: $0.pixelHeight,
+                                                    framesPerSecond: screen?.maximumFramesPerSecond ?? 60) }
+            let plan = try GameLauncher.plan(for: game, region: regionOverride, display: display)
+            if plan.isWindows { phases[game.id] = .preparingWindows }
+            let session = try await GameLauncher.prepareWindows(plan)
             phases[game.id] = .signingIn
             guard let token = await token(for: plan, gameName: game.displayName, account: account,
                                           activate: accountID == nil, forceSignIn: forceSignIn) else {
@@ -320,7 +379,13 @@ final class AppModel {
                 return
             }
             phases[game.id] = .launching
-            try GameLauncher.launch(plan, token: token, gameName: game.displayName)
+            if let session {
+                let pid = try await GameLauncher.launchWindows(plan, token: token, session: session, gameName: game.displayName)
+                windowsSessions[game.id] = session
+                observeWindowsExit(pid: pid, game: game)
+            } else {
+                try GameLauncher.launch(plan, token: token, gameName: game.displayName)
+            }
             UserDefaults.standard.set(game.id, forKey: Self.lastPlayedKey)
             // Keep "launching" until the game shows up in the running list.
             try? await Task.sleep(for: .seconds(4))
@@ -665,9 +730,44 @@ final class AppModel {
 
     private func refreshRunning() {
         let runningApps = NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.standardizedFileURL }
-        running = Set(games.filter { game in
+        running = Set(discoveredGames.filter { game in
+            if game.install.platform == .windows {
+                return !WineProcesses.heroesAndSwitcher(in: URL(fileURLWithPath: game.install.installPath)).isEmpty
+            }
             guard let app = game.appURL?.standardizedFileURL else { return false }
             return runningApps.contains(app)
-        }.map(\.id))
+        }.map(\.id)).union(windowsSessions.keys)
+        for game in discoveredGames where game.install.platform == .windows {
+            for pid in WineProcesses.heroesAndSwitcher(in: URL(fileURLWithPath: game.install.installPath)) {
+                observeWindowsExit(pid: pid, game: game)
+            }
+        }
+    }
+
+    private func observeWindowsExit(pid: Int32, game: Game) {
+        guard windowsObservers[pid] == nil else { return }
+        let source = DispatchSource.makeProcessSource(identifier: pid, eventMask: .exit, queue: .main)
+        source.setEventHandler { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.windowsObservers.removeValue(forKey: pid)?.cancel()
+                if let session = self.windowsSessions[game.id] {
+                    Task {
+                        let survivors = await session.gameExited()
+                        if survivors.isEmpty {
+                            if self.windowsSessions[game.id] === session { self.windowsSessions.removeValue(forKey: game.id) }
+                        } else {
+                            for survivor in survivors { self.observeWindowsExit(pid: survivor, game: game) }
+                        }
+                        self.refreshRunning()
+                    }
+                } else {
+                    Task { await WindowsHeroes.cleanupAfterExit(install: game.install) }
+                }
+                self.refreshRunning()
+            }
+        }
+        windowsObservers[pid] = source
+        source.activate()
     }
 }

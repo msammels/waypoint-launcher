@@ -71,6 +71,17 @@ void mainCRTStartup(void){
  if(!mode)finish(2,"invalid-input\n");
  BLOB entropy={16,entropyBytes},plain={0,0},protected={0,0};
  HANDLE key=0,hkcu=(HANDLE)(long long)(int)0x80000001;
+ if(equal(mode,"prepare")&&p==end){
+  HANDLE hklm=(HANDLE)(long long)(int)0x80000002;
+  DWORD dpi=2,observed=0,type=0,size=sizeof(observed);
+  long result=RegCreateKeyExW(hklm,L"Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\HeroesOfTheStorm_x64.exe",0,0,0,0x103,0,&key,0);
+  if(!result){
+   result=RegSetValueExW(key,L"dpiAwareness",0,4,(const unsigned char*)&dpi,sizeof(dpi));
+   if(!result)result=RegQueryValueExW(key,L"dpiAwareness",0,&type,(unsigned char*)&observed,&size);
+   RegCloseKey(key);
+  }
+  finish(result||type!=4||size!=sizeof(dpi)||observed!=dpi?7:0,result||observed!=dpi?"registry-failed\n":"ok\n");
+ }
  if(equal(mode,"clear")&&p==end){
   long result=RegOpenKeyExW(hkcu,keyPath,0,0x102,&key);
   if(result==2)finish(0,"ok\n");

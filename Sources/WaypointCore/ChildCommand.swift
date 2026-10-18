@@ -9,8 +9,9 @@ enum ChildCommand {
     static func run(executable: URL, arguments: [String], directory: URL,
                     environment: [String: String], input: Data = Data(),
                     timeout: TimeInterval = 30, successStatus: Int32 = 0,
-                    acknowledgement: Data? = nil) async throws {
+                    acknowledgement: Data? = nil, completeOnCancellation: Bool = false) async throws {
         guard input.count <= 1024, (acknowledgement?.count ?? 0) <= 64 else { throw Failure.invalidInput }
+        if completeOnCancellation { try Task.checkCancellation() }
         let child = Child()
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -23,9 +24,9 @@ enum ChildCommand {
                     } catch { continuation.resume(throwing: error) }
                 }
             }
-            try Task.checkCancellation()
+            if !completeOnCancellation { try Task.checkCancellation() }
         } onCancel: {
-            child.cancel()
+            if !completeOnCancellation { child.cancel() }
         }
     }
 

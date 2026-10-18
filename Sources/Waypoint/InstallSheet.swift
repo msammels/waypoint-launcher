@@ -6,23 +6,31 @@ import WaypointCore
 final class InstallSheet: NSViewController {
     private let product: InstallableProduct
     private let model: AppModel
+    private var platform: InstallPlatform
     private var parentFolder = URL(fileURLWithPath: "/Applications", isDirectory: true)
+    private var hasCustomParent = false
     private var sizeTask: Task<Void, Never>?
 
     private let location = NSTextField.label(.body, color: .secondaryLabelColor)
     private let languagePicker: LanguagePicker
     private let regionPopup = NSPopUpButton()
+    private let platformPopup = NSPopUpButton()
     private let sizeSpinner = NSProgressIndicator.spinner()
     private let sizeText = NSTextField.label(.body)
     private let installButton = NSButton(title: "Install", target: nil, action: nil)
 
-    private var folder: URL { parentFolder.appendingPathComponent(product.folderName, isDirectory: true) }
+    private var folderName: String { product.folderName + (platform == .windows ? " (Windows)" : "") }
+    private var folder: URL { parentFolder.appendingPathComponent(folderName, isDirectory: true) }
     private var languages: GameLanguages? { languagePicker.languages }
     private var region: Region { Region.allCases[max(regionPopup.indexOfSelectedItem, 0)] }
 
-    init(product: InstallableProduct, model: AppModel) {
+    init(product: InstallableProduct, model: AppModel, platform: InstallPlatform? = nil) {
         self.product = product
         self.model = model
+        self.platform = platform ?? model.defaultPlatform(for: product)
+        if self.platform == .windows {
+            parentFolder = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Games", isDirectory: true)
+        }
         languagePicker = LanguagePicker(codes: product.languages, selected: GameLanguages(text: product.defaultLanguage()),
                                         hasSpokenLanguage: product.hasSpokenLanguage)
         super.init(nibName: nil, bundle: nil)
@@ -45,7 +53,13 @@ final class InstallSheet: NSViewController {
         regionPopup.action = #selector(refreshSize)
         sizeText.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let grid = NSGridView(views: [[Self.formLabel("Location:"), locationRow]] + languagePicker.rows + [
+        platformPopup.addItems(withTitles: ["Windows (recommended)", "macOS"])
+        platformPopup.selectItem(at: platform == .windows ? 0 : 1)
+        platformPopup.target = self
+        platformPopup.action = #selector(changePlatform)
+        let platformRows: [[NSView]] = product.productCode == "hero" && WindowsHeroes.isAvailable
+            ? [[Self.formLabel("Version:"), platformPopup]] : []
+        let grid = NSGridView(views: platformRows + [[Self.formLabel("Location:"), locationRow]] + languagePicker.rows + [
             [Self.formLabel("Region:"), regionPopup],
             [Self.formLabel("Download:"), NSStackView(views: [sizeSpinner, sizeText])],
         ])
@@ -89,7 +103,7 @@ final class InstallSheet: NSViewController {
     /// any changes, dropping an answer that's no longer wanted.
     @objc private func refreshSize() {
         sizeTask?.cancel()
-        let (product, model, folder, region) = (product, model, folder, region)
+        let (product, model, folder, region, platform) = (product, model, folder, region, platform)
         guard let languages else { return }
         show(size: nil)
         sizeTask = Task { [weak self] in
@@ -98,7 +112,7 @@ final class InstallSheet: NSViewController {
             guard !Task.isCancelled else { return }
             let size: Result<(download: UInt64, stored: UInt64), Error>
             do {
-                size = .success(try await model.installSize(product, folder: folder, region: region, languages: languages))
+                size = .success(try await model.installSize(product, folder: folder, region: region, languages: languages, platform: platform))
             } catch {
                 size = .failure(error)
             }
@@ -132,10 +146,11 @@ final class InstallSheet: NSViewController {
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.prompt = "Choose"
-        panel.message = "\(product.displayName) will be installed in a \"\(product.folderName)\" folder here."
+        panel.message = "\(product.displayName) will be installed in a \"\(folderName)\" folder here."
         panel.directoryURL = parentFolder
         if panel.runModal() == .OK, let url = panel.url {
             parentFolder = url
+            hasCustomParent = true
             showLocation()
             refreshSize() // another folder may hold a partial install, or not
         }
@@ -145,10 +160,26 @@ final class InstallSheet: NSViewController {
         dismiss(nil)
     }
 
+    @objc private func changePlatform() {
+        platform = platformPopup.indexOfSelectedItem == 0 ? .windows : .macOS
+        if model.heroesEdition(platform)?.isInstalled == true {
+            model.selectHeroesEdition(platform)
+            dismiss(nil)
+            return
+        }
+        if !hasCustomParent {
+            parentFolder = platform == .windows
+                ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Games", isDirectory: true)
+                : URL(fileURLWithPath: "/Applications", isDirectory: true)
+        }
+        showLocation()
+        refreshSize()
+    }
+
     @objc private func install() {
-        let (product, model, folder, region) = (product, model, folder, region)
+        let (product, model, folder, region, platform) = (product, model, folder, region, platform)
         guard let languages else { return }
-        Task { await model.install(product, folder: folder, region: region, languages: languages) }
+        Task { await model.install(product, folder: folder, region: region, languages: languages, platform: platform) }
         dismiss(nil)
     }
 
