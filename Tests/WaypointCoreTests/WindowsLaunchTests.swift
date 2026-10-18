@@ -126,6 +126,10 @@ import CryptoKit
     #expect(try WindowsHeroes.installRuntime(from: resources, cacheRoot: cache) == installed)
     #expect(fm.isExecutableFile(atPath: installed.appendingPathComponent("wine/bin/wine").path))
     #expect(try fm.destinationOfSymbolicLink(atPath: installed.appendingPathComponent("wine/bin/wine64").path) == "wine")
+    let unexpected = installed.appendingPathComponent("wine/bin/unexpected.dylib")
+    try Data("unexpected component".utf8).write(to: unexpected)
+    #expect(try WindowsHeroes.installRuntime(from: resources, cacheRoot: cache) == installed)
+    #expect(!fm.fileExists(atPath: unexpected.path))
     try fm.removeItem(at: resources)
     #expect(try Data(contentsOf: installed.appendingPathComponent("wine/bin/wine")) == files["wine/bin/wine"])
 }

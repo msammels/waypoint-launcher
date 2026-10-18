@@ -80,7 +80,8 @@ void mainCRTStartup(void){
    if(!result)result=RegQueryValueExW(key,L"dpiAwareness",0,&type,(unsigned char*)&observed,&size);
    RegCloseKey(key);
   }
-  finish(result||type!=4||size!=sizeof(dpi)||observed!=dpi?7:0,result||observed!=dpi?"registry-failed\n":"ok\n");
+  int failed=result||type!=4||size!=sizeof(dpi)||observed!=dpi;
+  finish(failed?7:0,failed?"registry-failed\n":"ok\n");
  }
  if(equal(mode,"clear")&&p==end){
   long result=RegOpenKeyExW(hkcu,keyPath,0,0x102,&key);

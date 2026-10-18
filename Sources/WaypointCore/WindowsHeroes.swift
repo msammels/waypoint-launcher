@@ -25,23 +25,26 @@ public enum WindowsHeroes {
         return url
     }
 
-    public static var isAvailable: Bool {
+    static var isHostSupported: Bool {
         #if arch(arm64)
-        ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 14, minorVersion: 6, patchVersion: 0))
-            && Rosetta.isInstalled && resources != nil
+        ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0))
+            && Rosetta.isInstalled
         #else
         false
         #endif
     }
 
+    public static var isAvailable: Bool { isHostSupported && resources != nil }
+
     static let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Waypoint", isDirectory: true)
 
     enum Failure: Error, LocalizedError {
-        case unavailable, busy, invalidRuntime, startup
+        case unavailable, unsupportedHost, busy, invalidRuntime, startup
         var errorDescription: String? {
             switch self {
             case .unavailable: "This build of Waypoint does not include the Windows version of Heroes of the Storm."
+            case .unsupportedHost: "The Windows version of Heroes of the Storm requires an Apple silicon Mac with macOS 15 or later and Rosetta."
             case .busy: "Heroes of the Storm is already running or starting."
             case .invalidRuntime: "The Windows game components are incomplete. Reinstall Waypoint to repair them."
             case .startup: "The Windows version of Heroes of the Storm closed before finishing startup."
@@ -98,6 +101,17 @@ public enum WindowsHeroes {
 
     private static func verify(_ manifest: Manifest, in root: URL) throws {
         let fm = FileManager.default
+        let allowed = Set(manifest.files.keys).union(manifest.symlinks?.keys.map { $0 } ?? []).union(["runtime.json"])
+        // FileManager's URL enumerator canonicalizes /var to /private/var on
+        // macOS. Relative-path enumeration preserves manifest names directly.
+        guard let entries = fm.enumerator(atPath: root.path) else { throw Failure.invalidRuntime }
+        for case let name as String in entries {
+            let entry = root.appendingPathComponent(name)
+            let type = try fm.attributesOfItem(atPath: entry.path)[.type] as? FileAttributeType
+            if type != .typeDirectory {
+                guard allowed.contains(name) else { throw Failure.invalidRuntime }
+            }
+        }
         func file(_ name: String) throws -> URL {
             guard !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else { throw Failure.invalidRuntime }
             let file = root.appendingPathComponent(name)
@@ -169,6 +183,7 @@ public actor WindowsHeroesSession {
     }
 
     func prepare() async throws {
+        guard WindowsHeroes.isHostSupported else { throw WindowsHeroes.Failure.unsupportedHost }
         let root = URL(fileURLWithPath: target.install.installPath, isDirectory: true)
         try target.install.platform.validate(install: target.install)
         // A game may have outlived a previous Waypoint process, including a
@@ -196,10 +211,11 @@ public actor WindowsHeroesSession {
             // this prefix. The process checks above exclude a live game.
             if let previousRuntime, previousRuntime.range(of: "^heroes-[a-f0-9]{64}$", options: .regularExpression) != nil {
                 let server = runtime!.deletingLastPathComponent().appendingPathComponent(previousRuntime + "/wine/bin/wineserver")
-                if fm.isExecutableFile(atPath: server.path) {
+                let usableServer = fm.isExecutableFile(atPath: server.path) ? server : wineRoot.appendingPathComponent("bin/wineserver")
+                if fm.isExecutableFile(atPath: usableServer.path) {
                     // -k also returns 1 for a stale, unlocked server lock.
-                    try? await ChildCommand.run(executable: server, arguments: ["-k"], directory: prefix, environment: environment)
-                    try await ChildCommand.run(executable: server, arguments: ["-w"], directory: prefix, environment: environment, timeout: 15)
+                    try? await ChildCommand.run(executable: usableServer, arguments: ["-k"], directory: prefix, environment: environment)
+                    try await ChildCommand.run(executable: usableServer, arguments: ["-w"], directory: prefix, environment: environment, timeout: 15)
                 }
             }
             let registry = prefix.appendingPathComponent("user.reg")
@@ -270,7 +286,7 @@ public actor WindowsHeroesSession {
         let parent = runtime!.deletingLastPathComponent()
         let activePaths = RunningProcesses.executables().map { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path }
         for candidate in (try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? [] {
-            guard candidate != runtime!,
+            guard candidate.lastPathComponent != runtimeID,
                   candidate.lastPathComponent.range(of: "^(heroes-[a-f0-9]{64}|\\.heroes-[A-Fa-f0-9-]{36}|\\.retired-[A-Fa-f0-9-]{36})$", options: .regularExpression) != nil,
                   !activePaths.contains(where: { $0.hasPrefix(candidate.resolvingSymlinksInPath().path + "/") }) else { continue }
             try? fm.removeItem(at: candidate)
@@ -320,6 +336,7 @@ public actor WindowsHeroesSession {
 
     func preparationFailed() async {
         if runtime != nil, prefixValidated { await rollback() }
+        else { lease.release() }
     }
 
     func recoverExitCleanup() async {
@@ -348,7 +365,7 @@ public actor WindowsHeroesSession {
     }
 
     private func rollback() async {
-        guard prefixValidated else { return }
+        guard prefixValidated else { lease.release(); return }
         // This is exclusively Waypoint's own prefix, under its launch lease.
         // Never target a global wineserver or any existing Battle.net bottle.
         let root = URL(fileURLWithPath: target.install.installPath, isDirectory: true)
