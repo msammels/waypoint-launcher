@@ -383,6 +383,7 @@ final class AppModel {
                 let pid = try await GameLauncher.launchWindows(plan, token: token, session: session, gameName: game.displayName)
                 windowsSessions[game.id] = session
                 observeWindowsExit(pid: pid, game: game)
+                Task { [weak self] in await self?.revealWindowsGame(game) }
             } else {
                 try GameLauncher.launch(plan, token: token, gameName: game.displayName)
             }
@@ -769,5 +770,22 @@ final class AppModel {
         }
         windowsObservers[pid] = source
         source.activate()
+    }
+
+    /// A loose Wine executable has no app bundle for Launch Services to
+    /// activate. Reveal the GUI after this Play action while Waypoint still
+    /// owns focus; switching to another app cancels the request.
+    private func revealWindowsGame(_ game: Game) async {
+        let root = URL(fileURLWithPath: game.install.installPath)
+        for _ in 0..<120 {
+            guard windowsSessions[game.id] != nil, NSApp.isActive, !Task.isCancelled else { return }
+            if let pid = WineProcesses.heroes(in: root).first,
+               let app = NSRunningApplication(processIdentifier: pid),
+               app.isFinishedLaunching, app.activationPolicy == .regular {
+                app.activate(options: [.activateAllWindows])
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
     }
 }
