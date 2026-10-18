@@ -8,7 +8,7 @@ public enum GameFamily: String, Sendable {
 
 /// A launchable game on disk.
 public struct Game: Identifiable, Equatable, Sendable {
-    public var id: String { install.uid }
+    public var id: String { install.key }
     public var install: ProductInstall
     public var family: GameFamily
     public var displayName: String
@@ -163,9 +163,9 @@ public struct GameLibrary {
         var byUID: [String: ProductInstall] = [:]
         var order: [String] = []
         func add(_ install: ProductInstall) {
-            if byUID[install.uid] == nil { order.append(install.uid) }
+            if byUID[install.key] == nil { order.append(install.key) }
             // Later sources only fill gaps; the Agent database is authoritative.
-            byUID[install.uid] = byUID[install.uid] ?? install
+            byUID[install.key] = byUID[install.key] ?? install
         }
 
         if let installs = try? ProductDB.loadAgentDatabase(at: agentDatabase) {

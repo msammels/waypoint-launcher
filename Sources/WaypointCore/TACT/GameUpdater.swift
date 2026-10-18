@@ -124,7 +124,8 @@ public struct GameUpdater: Sendable {
             target = try await versions.latest(product: install.productCode, region: region)
         }
         let cdn = try await versions.cdn(product: install.productCode, region: region)
-        let installedTags = install.tagString ?? TagLanguages.replacing(in: "OSX \(region.launchOptionValue)", with: install.languages)
+        try install.platform.validate(install: install)
+        let installedTags = install.tagString ?? TagLanguages.replacing(in: "\(install.platform.manifestTag) \(region.launchOptionValue)", with: install.languages)
         let planned = languages.map { install.with($0, tags: installedTags) } ?? install
         let tags = planned.tagString ?? installedTags
 
@@ -205,6 +206,7 @@ public struct GameUpdater: Sendable {
     /// for their loose files and record the whole install themselves).
     public func apply(_ plan: UpdatePlan, record: Bool = true,
                       progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
+        guard plan.install.isSameInstallation(as: install) else { throw TACTError.malformed("Update plan belongs to another installation") }
         try Task.checkCancellation()
         let started = Date()
         guard RunningProcesses.inside(root).isEmpty else {
@@ -213,6 +215,7 @@ public struct GameUpdater: Sendable {
         }
         try BattleNet.ensureNotRunning()
         let fm = FileManager.default
+        try install.platform.claim(install: install)
         try fm.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         Log.info(.gameUpdate, "apply_started", nil, ["uid": install.uid, "to": plan.target.name, "files": plan.files.count,
                                                     "bytes": plan.downloadSize, "deletions": plan.deletions.count])
@@ -273,7 +276,7 @@ public struct GameUpdater: Sendable {
             try? fm.removeItem(at: try safeURL(path))
         }
         if record {
-            try store.record(uid: install.uid, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name,
+            try store.record(install: plan.install, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name,
                                                               install: plan.install, chosenLanguages: plan.setsLanguages,
                                                               replacedTags: plan.replacedTags))
         }
@@ -484,6 +487,8 @@ public enum RunningProcesses {
 /// left alone; this overrides it when newer. For games Waypoint installed
 /// itself it's the only record, so it also keeps where and how.
 public struct InstalledBuild: Codable, Sendable, Equatable {
+    /// Omitted by older/native records; those are macOS installations.
+    public var platform: InstallPlatform?
     public var buildConfig: String
     public var version: String
     public var productCode: String?
@@ -502,6 +507,7 @@ public struct InstalledBuild: Codable, Sendable, Equatable {
     public init(buildConfig: String, version: String, install: ProductInstall? = nil,
                 chosenLanguages: Bool = false, replacedTags: String? = nil) {
         self.buildConfig = buildConfig
+        platform = install?.platform == .windows ? .windows : nil
         self.version = version
         self.chosenLanguages = chosenLanguages ? true : nil
         self.replacedTags = chosenLanguages ? replacedTags : nil
@@ -516,14 +522,19 @@ public struct InstalledBuild: Codable, Sendable, Equatable {
     /// The install this record describes, if it has enough to stand alone.
     public func install(uid: String) -> ProductInstall? {
         guard let productCode, let installPath else { return nil }
+        let platform = platform ?? (uid.hasSuffix("@windows") ? .windows : .macOS)
+        let uid = platform == .windows && uid.hasSuffix("@windows") ? String(uid.dropLast(8)) : uid
         return ProductInstall(uid: uid, productCode: productCode, installPath: installPath, region: region,
                               textLanguage: textLanguage, speechLanguage: speechLanguage, version: version,
-                              buildConfig: buildConfig, tagString: tagString)
+                              buildConfig: buildConfig, tagString: tagString, platform: platform)
     }
 }
 
 public struct InstallStateStore: Sendable {
     public var file: URL
+    /// Older Waypoint versions can rewrite the native file. Keep Windows
+    /// records out of that file so a downgrade cannot reinterpret their paths.
+    public var windowsFile: URL { file.deletingPathExtension().appendingPathExtension("windows.json") }
 
     public init(file: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Waypoint/installs.json")) {
@@ -531,9 +542,13 @@ public struct InstallStateStore: Sendable {
     }
 
     public func load() -> [String: InstalledBuild] {
-        guard let data = try? Data(contentsOf: file),
-              var all = try? JSONDecoder().decode([String: InstalledBuild].self, from: data)
-        else { return [:] }
+        func read(_ url: URL) -> [String: InstalledBuild] {
+            guard let data = try? Data(contentsOf: url),
+                  let records = try? JSONDecoder().decode([String: InstalledBuild].self, from: data)
+            else { return [:] }
+            return records
+        }
+        var all = read(file)
         // Up to 0.4.9 Waypoint filed HotS, D3 and Anniversary under their
         // product code, not Battle.net's uid, so a game Battle.net also
         // knew showed up twice. The next write saves the new key.
@@ -545,10 +560,37 @@ public struct InstallStateStore: Sendable {
             all[product.uid] = build
             all[uid] = nil
         }
+        for (key, var build) in read(windowsFile) {
+            build.platform = .windows
+            let uid = key.hasSuffix("@windows") ? String(key.dropLast(8)) : key
+            all[InstallPlatform.windows.installKey(uid: uid)] = build
+        }
         return all
     }
 
+    /// Compatibility API for existing native callers. Windows writers must
+    /// supply an installation, rather than guess its platform from a bare uid.
     public func record(uid: String, _ build: InstalledBuild) throws {
+        guard !uid.contains("@"), build.platform != .windows,
+              InstallPlatform.from(tags: build.tagString) != .windows
+        else { throw TACTError.malformed("Windows build records require their installation identity") }
+        try record(key: uid, platform: .macOS, build)
+    }
+
+    public func record(install: ProductInstall, _ build: InstalledBuild) throws {
+        guard !install.uid.contains("@") else { throw TACTError.malformed("Invalid install uid") }
+        var build = build
+        build.platform = install.platform == .windows ? .windows : nil
+        build.productCode = install.productCode
+        build.installPath = install.installPath
+        build.region = build.region ?? install.region
+        build.textLanguage = build.textLanguage ?? install.textLanguage
+        build.speechLanguage = build.speechLanguage ?? install.speechLanguage
+        build.tagString = build.tagString ?? install.tagString
+        try record(key: install.key, platform: install.platform, build)
+    }
+
+    private func record(key uid: String, platform: InstallPlatform, _ build: InstalledBuild) throws {
         var all = load()
         var build = build
         if let old = all[uid], old.chosenLanguages == true {
@@ -562,10 +604,12 @@ public struct InstallStateStore: Sendable {
             }
         }
         all[uid] = build
-        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let destination = platform == .windows ? windowsFile : file
+        all = all.filter { ($0.value.platform ?? .macOS) == platform }
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(all).write(to: file, options: .atomic)
+        try encoder.encode(all).write(to: destination, options: .atomic)
     }
 
     /// Games Waypoint installed itself, which Battle.net doesn't know about.
@@ -577,7 +621,7 @@ public struct InstallStateStore: Sendable {
     /// unless Battle.net has since installed something newer: the build, and
     /// the languages when Waypoint changed them.
     public func apply(to install: ProductInstall) -> ProductInstall {
-        guard let build = load()[install.uid] else { return install }
+        guard let build = load()[install.key], (build.platform ?? .macOS) == install.platform else { return install }
         // Another copy of the same game (a test install elsewhere) isn't this one.
         func standardized(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.path }
         if let path = build.installPath, standardized(path) != standardized(install.installPath) { return install }

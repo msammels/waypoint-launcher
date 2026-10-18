@@ -2,6 +2,14 @@ import Foundation
 
 /// One installed product as recorded by the Battle.net Agent.
 public struct ProductInstall: Equatable, Sendable {
+    public let platform: InstallPlatform
+    public var key: String { platform.installKey(uid: uid) }
+
+    func isSameInstallation(as other: ProductInstall) -> Bool {
+        key == other.key && productCode == other.productCode &&
+        URL(fileURLWithPath: installPath).resolvingSymlinksInPath().standardizedFileURL ==
+        URL(fileURLWithPath: other.installPath).resolvingSymlinksInPath().standardizedFileURL
+    }
     /// Install uid, e.g. `hs_beta`, `wow`, `wow_classic`. This is what Battle.net
     /// passes to games as `-uid`.
     public var uid: String
@@ -20,7 +28,8 @@ public struct ProductInstall: Equatable, Sendable {
 
     public init(uid: String, productCode: String, installPath: String,
                 region: String? = nil, textLanguage: String? = nil, speechLanguage: String? = nil, version: String? = nil,
-                buildConfig: String? = nil, tagString: String? = nil) {
+                buildConfig: String? = nil, tagString: String? = nil, platform: InstallPlatform = .macOS) {
+        self.platform = platform
         self.uid = uid
         self.productCode = productCode
         self.installPath = installPath
@@ -88,7 +97,8 @@ public enum ProductDB {
             speechLanguage: settings[7]?.first?.string.nonEmpty,
             version: state[7]?.first?.string.nonEmpty,
             buildConfig: state[14]?.first?.string.nonEmpty ?? state[12]?.last?.string.nonEmpty,
-            tagString: state[17]?.first?.string.nonEmpty
+            tagString: state[17]?.first?.string.nonEmpty,
+            platform: InstallPlatform.from(tags: state[17]?.first?.string) ?? .macOS
         )
     }
 }

@@ -114,6 +114,8 @@ public struct CASCInstaller: Sendable {
     /// build data), and loose files change over.
     public func plan(target requested: ProductVersion? = nil, verify: Bool = false, languages: GameLanguages? = nil,
                      log: @Sendable (String) -> Void = { _ in }) async throws -> CASCInstallPlan {
+        guard config.platform == install.platform else { throw TACTError.malformed("Product configuration platform does not match the installation") }
+        try install.platform.validate(install: install)
         let started = Date()
         let target: ProductVersion
         if let requested { target = requested } else { target = try await versions.latest(product: install.productCode, region: region) }
@@ -265,11 +267,15 @@ public struct CASCInstaller: Sendable {
     // MARK: Apply
 
     public func apply(_ plan: CASCInstallPlan, progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
+        guard config.platform == install.platform, plan.install.isSameInstallation(as: install)
+        else { throw TACTError.malformed("Install plan belongs to another installation") }
+        try install.platform.validate(install: install)
         try Task.checkCancellation()
         let started = Date()
         let fm = FileManager.default
         guard RunningProcesses.inside(root).isEmpty else { throw UpdateError.gameRunning }
         try BattleNet.ensureNotRunning()
+        try install.platform.claim(install: install)
         let storageDir = dataRoot.appendingPathComponent("data", isDirectory: true)
         // An update (or another product joining a shared storage): afterwards,
         // drop what no installed build needs any more.
@@ -369,7 +375,7 @@ public struct CASCInstaller: Sendable {
         }
         var record = plan.install
         record.tagString = plan.install.tagString ?? config.tagString(region: region, languages: plan.install.languages)
-        try store.record(uid: install.uid, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name, install: record,
+        try store.record(install: record, InstalledBuild(buildConfig: plan.target.buildConfig, version: plan.target.name, install: record,
                                                           chosenLanguages: plan.setsLanguages, replacedTags: plan.replacedTags))
         if storageExisted {
             // Best effort: the update itself is done either way.

@@ -67,7 +67,7 @@ func cleanup(_ args: [String]) async {
     guard let product = InstallableProduct.forProduct(install.productCode) else { fail("\(install.productCode) has no local storage Waypoint knows") }
     let region = install.region.flatMap(Region.init(rawValue:)) ?? .us
     do {
-        let config = try await VersionService().productConfig(product: install.productCode, region: region)
+        let config = try await VersionService().productConfig(product: install.productCode, region: region, platform: install.platform)
         guard !config.isContainerless else { fail("\(product.displayName) keeps no local storage") }
         let result = try await CASCInstaller(product: product, install: install, config: config, store: store)
             .cleanStorage(dryRun: args.contains("--dry-run"), log: log)

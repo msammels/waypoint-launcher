@@ -6,6 +6,10 @@ public enum GameInstallPlan: Sendable {
     /// Local CASC storage plus loose files (everything else).
     case casc(CASCInstallPlan)
 
+    public var install: ProductInstall {
+        switch self { case .loose(let plan): plan.install; case .casc(let plan): plan.install }
+    }
+
     public var downloadSize: UInt64 {
         switch self {
         case .loose(let plan): plan.downloadSize
@@ -32,6 +36,7 @@ public enum GameInstallPlan: Sendable {
 /// Installs any game in the catalog from scratch, following its product
 /// config: Hearthstone as loose files, the rest into local CASC storage.
 public struct GameInstaller: Sendable {
+    public let platform: InstallPlatform
     public var product: InstallableProduct
     public var folder: URL
     public var region: Region
@@ -40,7 +45,9 @@ public struct GameInstaller: Sendable {
     public var store: InstallStateStore
 
     public init(product: InstallableProduct, folder: URL, region: Region, languages: GameLanguages,
-                versions: VersionService = VersionService(), store: InstallStateStore = InstallStateStore()) {
+                versions: VersionService = VersionService(), store: InstallStateStore = InstallStateStore(),
+                platform: InstallPlatform = .macOS) {
+        self.platform = platform
         self.product = product
         self.folder = folder
         self.region = region
@@ -51,10 +58,12 @@ public struct GameInstaller: Sendable {
 
     /// `only` limits a loose-file install to some paths (tests, partial installs).
     public func plan(only: (@Sendable (String) -> Bool)? = nil, log: @Sendable (String) -> Void = { _ in }) async throws -> GameInstallPlan {
+        guard platform == .macOS || product.productCode == "hero" else { throw UpdateError.unsupported(product.displayName) }
         let target = try await versions.latest(product: product.productCode, region: region)
-        let config = try await versions.productConfig(product: product.productCode, region: region, version: target)
+        let config = try await versions.productConfig(product: product.productCode, region: region, version: target, platform: platform)
         let install = product.install(at: folder, region: region, languages: languages,
-                                      tagString: config.tagString(region: region, languages: languages))
+                                      tagString: config.tagString(region: region, languages: languages), platform: platform)
+        try platform.validate(install: install)
         Log.info(.install, "plan_started", nil, ["uid": product.uid, "version": target.name, "path": folder.path,
                                                  "containerless": config.isContainerless, "data_dir": config.dataDirectory,
                                                  "subfolder": config.subfolder, "tags": install.tagString ?? ""])
@@ -67,6 +76,11 @@ public struct GameInstaller: Sendable {
     }
 
     public func apply(_ plan: GameInstallPlan, progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
+        guard plan.install.platform == platform, plan.install.uid == product.uid,
+              plan.install.productCode == product.productCode,
+              URL(fileURLWithPath: plan.install.installPath).resolvingSymlinksInPath().standardizedFileURL == folder.resolvingSymlinksInPath().standardizedFileURL
+        else { throw TACTError.malformed("Install plan belongs to another installation") }
+        try platform.validate(install: plan.install)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         switch plan {
         case .loose(let p):
@@ -83,6 +97,10 @@ public enum GameUpdatePlan: Sendable {
     case loose(UpdatePlan)
     /// New files appended to local CASC storage, plus changed loose files.
     case casc(CASCInstallPlan)
+
+    public var install: ProductInstall {
+        switch self { case .loose(let plan): plan.install; case .casc(let plan): plan.install }
+    }
 
     public var target: ProductVersion {
         switch self {
@@ -136,7 +154,8 @@ public struct GameUpdate: Sendable {
     }
 
     public static func canUpdate(_ install: ProductInstall) -> Bool {
-        GameCatalog.family(for: install.productCode) == .hearthstone || InstallableProduct.forProduct(install.productCode) != nil
+        (install.platform == .macOS || install.productCode == "hero") &&
+        (GameCatalog.family(for: install.productCode) == .hearthstone || InstallableProduct.forProduct(install.productCode) != nil)
     }
 
     var region: Region { install.region.flatMap(Region.init(rawValue:)) ?? .us }
@@ -149,6 +168,7 @@ public struct GameUpdate: Sendable {
     /// `languages`, the game switches to them.
     public func plan(target requested: ProductVersion? = nil, verify: Bool = false, languages: GameLanguages? = nil,
                      log: @Sendable (String) -> Void = { _ in }) async throws -> GameUpdatePlan {
+        guard Self.canUpdate(install) else { throw UpdateError.unsupported(install.productCode) }
         let loose = GameUpdater(install: install, versions: versions, store: store)
         if GameCatalog.family(for: install.productCode) == .hearthstone {
             return .loose(try await loose.plan(target: requested, verify: verify, languages: languages, log: log))
@@ -156,13 +176,16 @@ public struct GameUpdate: Sendable {
         guard let product = InstallableProduct.forProduct(install.productCode) else { throw UpdateError.unsupported(install.productCode) }
         let target: ProductVersion
         if let requested { target = requested } else { target = try await versions.latest(product: install.productCode, region: region) }
-        let config = try await versions.productConfig(product: install.productCode, region: region, version: target)
+        try install.platform.validate(install: install)
+        let config = try await versions.productConfig(product: install.productCode, region: region, version: target, platform: install.platform)
         if config.isContainerless { return .loose(try await loose.plan(target: target, verify: verify, languages: languages, log: log)) }
         return .casc(try await CASCInstaller(product: product, install: install, config: config, versions: versions, store: store)
             .plan(target: target, verify: verify, languages: languages, log: log))
     }
 
     public func apply(_ plan: GameUpdatePlan, progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
+        guard plan.install.isSameInstallation(as: install) else { throw TACTError.malformed("Update plan belongs to another installation") }
+        try install.platform.validate(install: install)
         switch plan {
         case .loose(let p):
             try await GameUpdater(install: install, versions: versions, store: store).apply(p, progress: progress)

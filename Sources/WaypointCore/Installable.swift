@@ -80,9 +80,11 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
     public static func forProduct(_ code: String) -> InstallableProduct? { all.first { $0.productCode == code } }
 
     /// The install record for a fresh install into `folder`.
-    public func install(at folder: URL, region: Region, languages: GameLanguages, tagString: String) -> ProductInstall {
+    public func install(at folder: URL, region: Region, languages: GameLanguages, tagString: String,
+                        platform: InstallPlatform = .macOS) -> ProductInstall {
         ProductInstall(uid: uid, productCode: productCode, installPath: folder.standardizedFileURL.path,
-                       region: region.rawValue, textLanguage: languages.text, speechLanguage: languages.speech, tagString: tagString)
+                       region: region.rawValue, textLanguage: languages.text, speechLanguage: languages.speech,
+                       tagString: tagString, platform: platform)
     }
 
     public func install(at folder: URL, region: Region, language: String, tagString: String) -> ProductInstall {
