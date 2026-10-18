@@ -25,6 +25,7 @@ INPUTS = {
     "dxmt": ("https://github.com/3Shain/dxmt/releases/download/v0.80/dxmt-v0.80-builtin.tar.gz",
              "8f260e36b5739e68f3bad613381441385c4dc7b85b78ba8de653d5a6a264529d"),
 }
+PATCHED_CLASS_SHA256 = "673524e6c36ab1d506ab59e602a67a41024f1a84eea11f7ef20fc89f2bbee6e1"
 
 
 def sha(path):
@@ -206,15 +207,19 @@ def main():
     archives = {key: download(key, args.cache) for key in INPUTS}
     source = work / "source"
     patch = REPO / "tools/wine-runtime/patches/0001-initialize-missing-window-classes.patch"
-    if args.stage_only and not (source / ".waypoint-archive-sha256").exists():
-        raise RuntimeError("Stage-only requires a stamped recipe build")
-    extract_pinned(archives["wine"], source, INPUTS["wine"][1], "sources/wine")
-    applied = subprocess.run(["patch", "--dry-run", "-R", "-p1", "-i", str(patch)], cwd=source,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-    if not applied:
-        if args.stage_only:
-            raise RuntimeError("The built Wine source does not contain the qualified window-class patch")
-        run(["patch", "-p1", "-i", patch], cwd=source)
+    if args.stage_only:
+        stamp = source / ".waypoint-archive-sha256"
+        if not stamp.exists() or stamp.read_text().strip() != INPUTS["wine"][1]:
+            raise RuntimeError("Stage-only requires the exact stamped Wine source pin")
+    else:
+        # Full builds always start from the pinned pristine source. BSD patch
+        # can guess the reverse direction even during --dry-run -R; never use
+        # that interactive heuristic to decide whether the fix was applied.
+        if source.exists(): shutil.rmtree(source)
+        extract_pinned(archives["wine"], source, INPUTS["wine"][1], "sources/wine")
+        run(["patch", "-f", "-p1", "-i", patch], cwd=source, stdin=subprocess.DEVNULL)
+    if sha(source / "dlls/win32u/class.c") != PATCHED_CLASS_SHA256:
+        raise RuntimeError("Wine window-class fix does not match the qualified post-patch hash")
     dependency_package = work / "dependency-package"
     extract_pinned(archives["dependencies"], dependency_package, INPUTS["dependencies"][1])
     upstream_lib = dependency_package / "Wine Stable.app/Contents/Resources/wine/lib"
