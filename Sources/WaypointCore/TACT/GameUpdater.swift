@@ -531,8 +531,21 @@ public struct InstallStateStore: Sendable {
     }
 
     public func load() -> [String: InstalledBuild] {
-        guard let data = try? Data(contentsOf: file) else { return [:] }
-        return (try? JSONDecoder().decode([String: InstalledBuild].self, from: data)) ?? [:]
+        guard let data = try? Data(contentsOf: file),
+              var all = try? JSONDecoder().decode([String: InstalledBuild].self, from: data)
+        else { return [:] }
+        // Up to 0.4.9 Waypoint filed HotS, D3 and Anniversary under their
+        // product code, not Battle.net's uid, so a game Battle.net also
+        // knew showed up twice. The next write saves the new key.
+        for (uid, build) in all {
+            guard let code = build.productCode, uid == code,
+                  let product = InstallableProduct.forProduct(code), product.uid != uid,
+                  all[product.uid] == nil
+            else { continue }
+            all[product.uid] = build
+            all[uid] = nil
+        }
+        return all
     }
 
     public func record(uid: String, _ build: InstalledBuild) throws {

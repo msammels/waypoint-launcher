@@ -142,11 +142,12 @@ public struct GameLibrary {
     public var fileManager: FileManager
     public var stateStore: InstallStateStore
 
-    public static let defaultSearchRoots: [URL] = [
-        "/Applications/Hearthstone",
-        "/Applications/World of Warcraft",
-        "/Applications/Warcraft III",
-    ].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    /// Every supported game's default folder: Battle.net can forget a game
+    /// (it lost HotS once), and Waypoint should still find it there rather
+    /// than offer a fresh install.
+    public static let defaultSearchRoots: [URL] = InstallableProduct.all.map(\.folderName)
+        .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        .map { URL(fileURLWithPath: "/Applications").appendingPathComponent($0, isDirectory: true) }
 
     public init(agentDatabase: URL = ProductDB.agentDatabaseURL,
                 searchRoots: [URL] = GameLibrary.defaultSearchRoots,

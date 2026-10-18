@@ -126,6 +126,39 @@ private func tempDir() throws -> URL {
     #expect(library.installs().isEmpty, "a deleted install disappears")
 }
 
+/// 0.4.9 installed HotS as `hero`; Battle.net then registered the same
+/// folder as `heroes`, and the library listed the game twice.
+@Test func heroesInstalledBefore0_4_10ListOnceNextToBattleNet() throws {
+    let dir = try tempDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let folder = dir.appendingPathComponent("Heroes of the Storm")
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let stateFile = dir.appendingPathComponent("installs.json")
+    try Data("""
+        {"hero": {"buildConfig": "a64c", "chosenLanguages": true, "installPath": "\(folder.path)", "productCode": "hero",
+                  "region": "eu", "speechLanguage": "enUS", "tagString": "OSX code EU? enUS speech?:OSX code EU? enUS text?",
+                  "textLanguage": "enUS", "version": "2.57.0.98348"}}
+        """.utf8).write(to: stateFile)
+    var battleNet = ProtoWriter()
+    battleNet.string(1, "heroes")
+    battleNet.string(2, "hero")
+    battleNet.message(3) { s in s.string(1, folder.path); s.string(2, "eu") }
+    try battleNet.data.write(to: folder.appendingPathComponent(".product.db"))
+
+    let store = InstallStateStore(file: stateFile)
+    #expect(Array(store.load().keys) == ["heroes"])
+    let library = GameLibrary(agentDatabase: dir.appendingPathComponent("missing.db"), searchRoots: [folder], stateStore: store)
+    let found = library.installs()
+    #expect(found.map(\.uid) == ["heroes"])
+    #expect(found.first?.version == "2.57.0.98348")
+}
+
+@Test func searchesEverySupportedGamesFolder() {
+    let roots = GameLibrary.defaultSearchRoots.map(\.path)
+    #expect(roots.contains("/Applications/Heroes of the Storm"))
+    #expect(roots.filter { $0 == "/Applications/World of Warcraft" }.count == 1)
+}
+
 @Test func errorsLogAsOneCompactLine() {
     let lost = NSError(domain: NSURLErrorDomain, code: -1005, userInfo: [
         NSLocalizedDescriptionKey: "The network connection was lost.",

@@ -298,6 +298,11 @@ extension InstallManifest.Tag {
     /// Types the set names no tag of don't filter. Words the manifest has no
     /// tag for are ignored; a trailing `?` marks a tag as optional, which
     /// amounts to the same thing.
+    ///
+    /// Option tags (type bit 0x4000: HotS and SC2's `code`, WoW's
+    /// `Alternate`, `HighRes`) never filter either. They mark extras, not a
+    /// subset to pick: Battle.net's HotS install, tagged `OSX code`, holds
+    /// the game's 16 GB of data, not just the 421 files tagged `code`.
     static func selectedIndices(_ tagString: String, in tags: [Self], entryCount: Int) -> [Int] {
         let mask = selectionMask(tagString, in: tags, entryCount: entryCount)
         return (0..<entryCount).filter { mask[$0 / 8] & (0x80 >> UInt8($0 % 8)) != 0 }
@@ -315,7 +320,8 @@ extension InstallManifest.Tag {
                 String(word.hasSuffix("?") ? word.dropLast() : word)
             })
             var selected = [UInt8](repeating: 0xFF, count: byteCount)
-            for group in Dictionary(grouping: tags.filter { names.contains($0.name) }, by: \.type).values {
+            let named = tags.filter { names.contains($0.name) && $0.type & 0x4000 == 0 }
+            for group in Dictionary(grouping: named, by: \.type).values {
                 var any = [UInt8](repeating: 0, count: byteCount)
                 for tag in group {
                     tag.mask.withUnsafeBytes { m in

@@ -175,6 +175,20 @@ private func selectFixture(_ tagString: String) -> [String] {
     #expect(selectFixture("") == tagFixturePaths)
 }
 
+@Test func tagSelectionOptionTagsDontFilter() {
+    // HotS tags its code files `code` (type 0x4000) and installs as
+    // `OSX code …`; that must not narrow the install to its code files.
+    let count = tagFixturePaths.count
+    let tags = (tagFixture + [("code", 0x4000, [1])]).map {
+        InstallManifest.Tag(name: $0.name, type: $0.type, mask: tagMask($0.entries, count: count))
+    }
+    func select(_ tagString: String) -> [String] {
+        InstallManifest.Tag.selectedIndices(tagString, in: tags, entryCount: count).map { tagFixturePaths[$0] }
+    }
+    #expect(select("OSX code EU? enUS speech?:OSX code EU? enUS text?") == ["base", "en/speech", "en/text"])
+    #expect(select("Windows code") == ["win/base"])
+}
+
 private func tagFixtureData() -> Data {
     var tagData = Data()
     for tag in tagFixture {

@@ -110,6 +110,25 @@ private func makeFakeApp(at url: URL, executable: String, arch: String = "arm64"
     let s2 = GameCatalog.game(for: ProductInstall(uid: "s2", productCode: "s2", installPath: root.path, region: "us"))
     #expect(s2.appURL?.lastPathComponent == "SC2Switcher.app")
     let s2Plan = try GameLauncher.plan(for: s2)
+    #expect(s2Plan.arguments == ["-sso=1", "-launch", "-uid", "s2"])
     #expect(s2Plan.codename == "S2")
     #expect(s2Plan.workingDirectory.standardizedFileURL == root.standardizedFileURL)
+}
+
+/// Battle.net's log: `Launched …/Support/HeroesSwitcher.app with args:
+/// -sso=1 -launch -uid heroes`. Without `-sso=1` the game skips the token.
+@Test func heroesLaunchPlanMatchesBattleNet() throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent("waypoint-hero-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: root) }
+    try makeFakeApp(at: root.appendingPathComponent("Support/HeroesSwitcher.app"), executable: "HeroesSwitcher")
+
+    let product = try #require(InstallableProduct.forProduct("hero"))
+    #expect(product.uid == "heroes")
+    let install = product.install(at: root, region: .eu, language: "enUS", tagString: "OSX code EU? enUS speech?:OSX code EU? enUS text?")
+    let plan = try GameLauncher.plan(for: GameCatalog.game(for: install))
+    #expect(plan.arguments == ["-sso=1", "-launch", "-uid", "heroes"])
+    #expect(plan.executable.lastPathComponent == "HeroesSwitcher")
+    #expect(plan.workingDirectory.standardizedFileURL == root.standardizedFileURL)
+    #expect(plan.codename == "Hero")
 }

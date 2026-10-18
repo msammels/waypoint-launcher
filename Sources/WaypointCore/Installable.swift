@@ -6,7 +6,9 @@ import Foundation
 /// time, so this only pins down what doesn't change between builds.
 public struct InstallableProduct: Sendable, Identifiable, Equatable {
     public var id: String { uid }
-    /// Battle.net's install uid; also what `-uid` passes to the game.
+    /// Battle.net's install uid; also what `-uid` passes to the game. Not
+    /// always the product code: Battle.net's own product.db and logs say
+    /// `heroes`, `diablo3` and `wow_classic_anniversary`.
     public var uid: String
     public var productCode: String
     public var displayName: String
@@ -17,7 +19,10 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
     public var codename: String
     /// The game's `.app`, relative to the install root (flavor folder included).
     public var appPath: String
-    /// Arguments from the product config; Waypoint adds `-uid <uid>`.
+    /// Arguments from the product config; Waypoint adds `-uid <uid>`. Where
+    /// the config has an `sso_launch_argument` (HotS, SC2, D3), Battle.net
+    /// puts it first (HotS: `-sso=1 -launch -uid heroes`); without it HotS
+    /// ignores the token and shows its own login.
     public var launchArguments: [String]
     /// Run from the flavor folder rather than the install root.
     public var flavorFolder: String?
@@ -51,24 +56,24 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
                            codename: "WoW", appPath: "_classic_era_/World of Warcraft Classic.app", launchArguments: ["-launcherlogin"],
                            flavorFolder: "_classic_era_", isContainerless: false,
                            languages: ["enUS", "deDE", "esES", "esMX", "frFR", "koKR", "ptBR", "ruRU", "zhCN", "zhTW"]),
-        InstallableProduct(uid: "wow_anniversary", productCode: "wow_anniversary", displayName: "WoW Classic Anniversary", folderName: "World of Warcraft",
+        InstallableProduct(uid: "wow_classic_anniversary", productCode: "wow_anniversary", displayName: "WoW Classic Anniversary", folderName: "World of Warcraft",
                            codename: "WoW", appPath: "_anniversary_/World of Warcraft Classic.app",
                            launchArguments: ["-launcherlogin", "-initialgamemode=bccfresh"],
                            flavorFolder: "_anniversary_", isContainerless: false, languages: commonLanguages + ["jaJP", "thTH"]),
         InstallableProduct(uid: "s2", productCode: "s2", displayName: "StarCraft II", folderName: "StarCraft II", codename: "S2",
-                           appPath: "Support/SC2Switcher.app", launchArguments: ["-launch"], flavorFolder: nil, isContainerless: false,
+                           appPath: "Support/SC2Switcher.app", launchArguments: ["-sso=1", "-launch"], flavorFolder: nil, isContainerless: false,
                            languages: commonLanguages),
         InstallableProduct(uid: "s1", productCode: "s1", displayName: "StarCraft", folderName: "StarCraft", codename: "S1",
                            appPath: "x86_64/StarCraft.app", launchArguments: ["-launch"], flavorFolder: nil, isContainerless: false,
                            languages: commonLanguages),
-        InstallableProduct(uid: "d3", productCode: "d3", displayName: "Diablo III", folderName: "Diablo III", codename: "D3",
-                           appPath: "Diablo III.app", launchArguments: ["-launch"], flavorFolder: nil, isContainerless: false,
+        InstallableProduct(uid: "diablo3", productCode: "d3", displayName: "Diablo III", folderName: "Diablo III", codename: "D3",
+                           appPath: "Diablo III.app", launchArguments: ["OnlineService.SSO=true", "-launch"], flavorFolder: nil, isContainerless: false,
                            languages: commonLanguages.filter { $0 != "zhCN" }),
         InstallableProduct(uid: "w3", productCode: "w3", displayName: "Warcraft III", folderName: "Warcraft III", codename: "W3",
                            appPath: "_retail_/x86_64/Warcraft III.app", launchArguments: ["-launch"], flavorFolder: "_retail_",
                            isContainerless: false, languages: commonLanguages),
-        InstallableProduct(uid: "hero", productCode: "hero", displayName: "Heroes of the Storm", folderName: "Heroes of the Storm",
-                           codename: "Hero", appPath: "Support/HeroesSwitcher.app", launchArguments: ["-launch"], flavorFolder: nil,
+        InstallableProduct(uid: "heroes", productCode: "hero", displayName: "Heroes of the Storm", folderName: "Heroes of the Storm",
+                           codename: "Hero", appPath: "Support/HeroesSwitcher.app", launchArguments: ["-sso=1", "-launch"], flavorFolder: nil,
                            isContainerless: false, languages: commonLanguages),
     ]
 
