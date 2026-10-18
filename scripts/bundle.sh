@@ -11,6 +11,8 @@
 #                  on S3 for signed builds (see release.sh); ad-hoc builds get
 #                  none, so development copies never replace themselves.
 #   BUNDLE_ID      bundle identifier (default: dev.waypoint.launcher)
+#   WINDOWS_RUNTIME staged free runtime (default: build/windows-runtime/Windows
+#                  if present). Set to "none" to omit Windows HotS support.
 #
 # Uses Xcode's toolchain: open-source toolchains may not match the installed SDK.
 set -euo pipefail
@@ -72,6 +74,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Heroes of the Storm uses the microphone for in-game voice chat.</string>
     <!-- Installs and updates allocate big buffers; malloc's large cache would
          keep them dirty after they're freed (80 MB vs 6 MB idle afterwards). -->
     <key>LSEnvironment</key><dict><key>MallocLargeCache</key><string>0</string></dict>
@@ -92,6 +95,19 @@ sign() {
 sign "$sparkle/Versions/B/Autoupdate"
 sign "$sparkle/Versions/B/Updater.app"
 sign "$sparkle"
-sign "$app"
+windows_runtime="${WINDOWS_RUNTIME:-build/windows-runtime/Windows}"
+if [[ "$windows_runtime" != "none" && -d "$windows_runtime" ]]; then
+    mkdir -p "$app/Contents/SharedSupport"
+    ditto "$windows_runtime" "$app/Contents/SharedSupport/Windows"
+    python3 scripts/sign-wine-runtime.py "$app/Contents/SharedSupport/Windows" --identity "$identity"
+elif [[ -n "${WINDOWS_RUNTIME:-}" && "$windows_runtime" != "none" ]]; then
+    print -u2 "Windows runtime not found: $windows_runtime"
+    exit 1
+fi
+if [[ -d "$app/Contents/SharedSupport/Windows" ]]; then
+    sign --entitlements tools/wine-runtime/waypoint.entitlements "$app"
+else
+    sign "$app"
+fi
 codesign --verify --deep --strict "$app"
 echo "Built $app $version ($build_number, $(lipo -archs "$app/Contents/MacOS/Waypoint"), signed: $identity, feed: ${feed:-none})"

@@ -1,0 +1,32 @@
+--- a/dlls/win32u/class.c
++++ b/dlls/win32u/class.c
+@@ -662,7 +662,15 @@
+     /* create the desktop window to trigger builtin class registration */
+     if (!is_desktop_class( name ) && !is_message_class( name )) get_desktop_window();
+ 
+-    if (!(class = find_class( instance, name ))) return 0;
++    if (!(class = find_class( instance, name )))
++    {
++        if (!is_desktop_class( name ) && !is_message_class( name ))
++        {
++            register_builtin_classes();
++            class = find_class( instance, name );
++        }
++        if (!class) return 0;
++    }
+ 
+     while ((status = get_shared_class( class, &lock, &class_shm )) == STATUS_PENDING)
+     {
+@@ -1245,7 +1253,12 @@
+ void register_builtin_classes(void)
+ {
+     static pthread_once_t init_once = PTHREAD_ONCE_INIT;
++    static __thread BOOL initializing;
++
++    if (initializing) return;
++    initializing = TRUE;
+     pthread_once( &init_once, register_builtins );
++    initializing = FALSE;
+ }
+ 
+ /***********************************************************************

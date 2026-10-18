@@ -1,0 +1,90 @@
+{
+  "Brotli-MIT.txt": {
+    "sha256": "3d180008e36922a4e8daec11c34c7af264fed5962d07924aea928c38e8663c94",
+    "url": "https://raw.githubusercontent.com/google/brotli/v1.1.0/LICENSE"
+  },
+  "Bzip2.txt": {
+    "sha256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3",
+    "url": "https://raw.githubusercontent.com/libarchive/bzip2/bzip2-1.0.8/LICENSE"
+  },
+  "DXMT-DXVK-zlib.txt": {
+    "sha256": "03ca4af84f5cd28cef3ed3f1ef4d17996992d35ccdbe82b29cc020ca02c16f3d",
+    "url": "https://raw.githubusercontent.com/3Shain/dxmt/v0.80/src/util/dxvk.LICENSE"
+  },
+  "DXMT-LLVM-Apache-Exceptions.txt": {
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee",
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-15.0.7/llvm/LICENSE.TXT"
+  },
+  "DXMT-MIT.txt": {
+    "sha256": "6b928413c6308c106f3e0080bd94b6427b56d587d400fd40e6cbfbab7d9c4ae1",
+    "url": "https://raw.githubusercontent.com/3Shain/dxmt/v0.80/LICENSE"
+  },
+  "FreeType.txt": {
+    "sha256": "08c135755dd589039470f1fdbb400daaabaaa50d0b366d19cebff4d22986baa1",
+    "url": "https://raw.githubusercontent.com/freetype/freetype/VER-2-13-3/docs/FTL.TXT"
+  },
+  "GNU-GPL-2.txt": {
+    "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+    "url": "https://raw.githubusercontent.com/coreutils/gnulib/master/doc/COPYINGv2"
+  },
+  "GNU-GPL-3.txt": {
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+    "url": "https://raw.githubusercontent.com/coreutils/gnulib/master/doc/COPYINGv3"
+  },
+  "GNU-LGPL-2.1.txt": {
+    "sha256": "20e50fe7aae3e56378ebf0417d9de904f55a0e61e4df315333e632a4d3555d95",
+    "url": "https://raw.githubusercontent.com/coreutils/gnulib/master/doc/COPYING.LESSERv2"
+  },
+  "GNU-LGPL-3.txt": {
+    "sha256": "e3a994d82e644b03a792a930f574002658412f62407f5fee083f2555c5f23118",
+    "url": "https://raw.githubusercontent.com/coreutils/gnulib/master/doc/COPYING.LESSERv3"
+  },
+  "GnuTLS.txt": {
+    "sha256": "3e043d77917e48e262301b8f880812fcd82236482630a421d555a38804eee643",
+    "url": "https://raw.githubusercontent.com/gnutls/gnutls/3.8.7/LICENSE"
+  },
+  "Libffi-MIT.txt": {
+    "sha256": "67894089811f93fca47a76f85e017da6f8582d4ba0905963c6e0f1ad6df7a195",
+    "url": "https://raw.githubusercontent.com/libffi/libffi/v3.4.6/LICENSE"
+  },
+  "Libpng.txt": {
+    "sha256": "7317e078e2d3b5d7ba5a6159e650945153262b44b76f6700f8e9edb261c5143e",
+    "url": "https://raw.githubusercontent.com/pnggroup/libpng/v1.6.43/LICENSE"
+  },
+  "MacPortsLegacySupport.txt": {
+    "sha256": "327758c118a3c9be158e788a8397035cfa62738a977618cdc44ba09aaa0bad3d",
+    "url": "https://raw.githubusercontent.com/macports/macports-legacy-support/v1.4.0/LICENSE"
+  },
+  "MoltenVK-Apache-2.0.txt": {
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/MoltenVK/v1.4.1/LICENSE"
+  },
+  "MoltenVK-SPIRV-Cross.txt": {
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/SPIRV-Cross/adec7acbf41a988713cdb85f93f26c8ca5ea863e/LICENSE"
+  },
+  "MoltenVK-SPIRV-Tools.txt": {
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "url": "https://raw.githubusercontent.com/KhronosGroup/SPIRV-Tools/262bdab48146c937467f826699a40da0fdfc0f1a/LICENSE"
+  },
+  "MoltenVK-cereal.txt": {
+    "sha256": "58604a126af6a671ea390ee3d5b3e42228aa59b2858fb7af1d5b20b31739ccbb",
+    "url": "https://raw.githubusercontent.com/USCiLab/cereal/a56bad8bbb770ee266e930c95d37fff2a5be7fea/LICENSE"
+  },
+  "Nettle-LICENSES.txt": {
+    "sha256": "a853c2ffec17057872340eee242ae4d96cbf2b520ae27d903e1b2fef1a5f9d1c",
+    "url": "https://raw.githubusercontent.com/gnutls/nettle/nettle_3.9.1_release_20230601/COPYING.LESSERv3"
+  },
+  "P11-kit-BSD.txt": {
+    "sha256": "2e1ba993904df807a10c3eda1e5c272338edc35674b679773a8b3ad460731054",
+    "url": "https://raw.githubusercontent.com/p11-glue/p11-kit/0.25.5/COPYING"
+  },
+  "Zlib.txt": {
+    "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+    "url": "https://raw.githubusercontent.com/madler/zlib/v1.3.1/LICENSE"
+  },
+  "Zstd-BSD.txt": {
+    "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
+    "url": "https://raw.githubusercontent.com/facebook/zstd/v1.5.6/LICENSE"
+  }
+}

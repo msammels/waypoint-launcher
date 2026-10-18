@@ -5,7 +5,7 @@
 # Waypoint
 
 **Battle.net без лишнего для маков с Apple Silicon.**<br>
-Устанавливает, обновляет и запускает игры Blizzard без приложения Battle.net. Без Rosetta. Просто жмёшь Play.
+Устанавливает, обновляет и запускает игры Blizzard без приложения Battle.net. Сам лаунчер работает нативно. Просто жмёшь Play.
 
 [![Latest release](https://img.shields.io/github/v/release/wowlocal/waypoint-launcher?color=2ea44f)](https://github.com/wowlocal/waypoint-launcher/releases/latest)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-111?logo=apple&logoColor=white)](#сборка)
@@ -36,6 +36,8 @@ Battle.net для Mac до сих пор собран только под Intel.
 | Висит в фоне | приложение + Agent + браузерные хелперы | ничего |
 
 ## Возможности
+
+- **Бесплатная Windows-версия HotS.** Сборка с Wine рекомендует Windows-версию Heroes of the Storm: установка, Play и сохранённые аккаунты работают в привычном нативном интерфейсе. CrossOver и платная лицензия не нужны. Для Windows-игры требуются Rosetta и macOS 15+; macOS-версию можно выбрать в той же строке. Функция находится в ветке `feat/free-windows-hots`; [сборка компонента](tools/wine-runtime/README.md) добавляет около 314 МБ до сжатия.
 
 - **Нативный.** Написан на Swift и собран только под arm64.
 - **Вход один раз на аккаунт.** Через официальный веб-логин Battle.net. Дальше каждый запуск — в один клик.

@@ -5,7 +5,7 @@
 # Waypoint
 
 **A bloat-free version of Battle.net for Apple Silicon Macs.**<br>
-Install, update and launch Blizzard games without the Battle.net app. No Rosetta. Just press Play.
+Install, update and launch Blizzard games without the Battle.net app. The launcher runs natively. Just press Play.
 
 [![Latest release](https://img.shields.io/github/v/release/wowlocal/waypoint-launcher?color=2ea44f)](https://github.com/wowlocal/waypoint-launcher/releases/latest)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-111?logo=apple&logoColor=white)](#build)
@@ -38,6 +38,7 @@ A launcher only has to do three things: install the game, keep it up to date, an
 ## Features
 
 - **Native.** Written in Swift, built only for arm64.
+- **Windows HotS, free.** Builds with the optional Wine component recommend the Windows edition of Heroes of the Storm. Install and Play use the same native interface and saved accounts. CrossOver and a paid license are not required. The Windows game needs Rosetta and macOS 15+; macOS HotS remains selectable.
 - **Sign in once per game.** Uses the official Battle.net web login. Battle.net signs each game in separately, so each one asks once; after that every launch is one click.
 - **Several accounts.** Each one keeps its own sign-ins, so switching between them is one click, with no login. **Play As** launches a game once as another account.
 - **Installs games.** Click **+** in the toolbar and pick a game. Waypoint downloads it straight from Blizzard's servers and lays it out exactly the way Battle.net does, so the game takes it as its own. Interrupted installs pick up where they stopped. Every Blizzard game with a Mac version is on the list; [Supported games](#supported-games) shows what has been tested.
@@ -75,6 +76,12 @@ open build/Waypoint.app
 ```
 
 Move `Waypoint.app` to `/Applications` if you want to keep it.
+
+To include Windows HotS support, first build the free runtime using the
+[runtime build instructions](tools/wine-runtime/README.md). The component adds
+about 314 MB before compression. Without it, the existing native-only build
+and game support remain available. This feature is currently on the
+`feat/free-windows-hots` branch; it is not part of older published releases.
 
 <details>
 <summary><b>Making a release</b></summary>
