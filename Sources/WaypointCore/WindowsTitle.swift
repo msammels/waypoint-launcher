@@ -64,17 +64,10 @@ public enum WindowsTitle: String, CaseIterable, Sendable {
         }
     }
 
-    /// New profiles stay internal until real installation/login/rendering
-    /// checks succeed. A local runtime override cannot change this policy.
+    /// Preview availability is separate from full gameplay qualification.
+    /// Keep the Preview label until broader gameplay checks have passed.
     public var isQualified: Bool { self == .heroes }
-    public var isEnabled: Bool {
-        if isQualified { return true }
-        #if WAYPOINT_WINDOWS_EXPERIMENTAL
-        return true
-        #else
-        return false
-        #endif
-    }
+    public var isEnabled: Bool { true }
     public static var enabled: [Self] { allCases.filter(\.isEnabled) }
 
     public static func forInstall(_ install: ProductInstall) -> Self? {

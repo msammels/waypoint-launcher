@@ -155,7 +155,6 @@ private struct GraphicsFixture {
     #expect(try !WindowsGraphics.licenseData(from: repo.appendingPathComponent("Resources/WindowsGraphics")).isEmpty)
 }
 
-#if WAYPOINT_WINDOWS_EXPERIMENTAL
 @Test(.enabled(if: WindowsTitle.diabloIV.isHostSupported))
 func failedGraphicsPreparationNeverBootsAnEmptyPrefixWithTheBaseEngine() async throws {
     let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -191,4 +190,3 @@ func failedGraphicsPreparationNeverBootsAnEmptyPrefixWithTheBaseEngine() async t
     #expect(!fm.fileExists(atPath: root.appendingPathComponent("wine-called").path))
     #expect(try fm.contentsOfDirectory(atPath: support.appendingPathComponent("Windows/fenris/prefix-v1").path).isEmpty)
 }
-#endif

@@ -103,8 +103,6 @@ xcrun swift test
 
 step "Building Waypoint $version"
 APP_PATH="$app" VERSION="$version" SIGN_IDENTITY="$identity" scripts/bundle.sh
-[[ ! -e "$app/Contents/Resources/WindowsBridge" && ! -e "$app/Contents/Resources/WindowsGraphics" ]] \
-    || fail "experimental Windows resources found in a public release"
 codesign --verify --deep --strict "$app"
 python3 scripts/validate-windows-publication.py "$component" --app "$app"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print SUFeedURL' "$app/Contents/Info.plist")" == "$feed_url" ]] \

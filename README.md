@@ -39,6 +39,7 @@ A launcher only has to do three things: install the game, keep it up to date, an
 
 - **Native.** Written in Swift, built only for arm64.
 - **Windows HotS, free.** Builds with the optional Wine component recommend the Windows edition of Heroes of the Storm. Install and Play use the same native interface and saved accounts. CrossOver and a paid license are not required. The Windows game needs Rosetta and macOS 15+; macOS HotS remains selectable.
+- **Windows Battle.net games in Preview.** Install and launch Overwatch, Diablo IV and Diablo II: Resurrected through the same native interface and official web login. These profiles need Apple silicon, Rosetta and macOS 26.5+. Graphics components download on demand after their license is accepted. Overwatch startup and Diablo IV login have been checked; Diablo II: Resurrected has not been tested yet. Blizzard's account requirements, including Overwatch SMS Protect where required, still apply.
 - **Sign in once per game.** Uses the official Battle.net web login. Battle.net signs each game in separately, so each one asks once; after that every launch is one click.
 - **Several accounts.** Each one keeps its own sign-ins, so switching between them is one click, with no login. **Play As** launches a game once as another account.
 - **Installs games.** Click **+** in the toolbar and pick a game. Waypoint downloads it straight from Blizzard's servers and lays it out exactly the way Battle.net does, so the game takes it as its own. Interrupted installs pick up where they stopped. Every Blizzard game with a Mac version is on the list; [Supported games](#supported-games) shows what has been tested.
@@ -57,6 +58,9 @@ A launcher only has to do three things: install the game, keep it up to date, an
 | Warcraft III: Reforged | ✅ Tested: the same files as Battle.net's own install | ✅ Tested. The game itself is Intel-only, so it runs under Rosetta | 🧪 Through Waypoint. Tested by repairing Waypoint's and Battle.net's installs; no new build has shipped yet |
 | World of Warcraft: Retail, Classic, Classic Era, Anniversary | 🧪 Implemented, not yet tested | 🧪 Implemented, not yet tested | 🧪 Implemented, not yet tested |
 | StarCraft II, StarCraft: Remastered, Diablo III, Heroes of the Storm | 🧪 Implemented, not yet tested | 🧪 Implemented, not yet tested | 🧪 Implemented, not yet tested |
+| Overwatch (Windows Preview) | ✅ Installed through Waypoint's installer | 🧪 Startup, native web login and Retina fullscreen checked; testing stopped at SMS Protect | 🧪 Implemented, not yet tested |
+| Diablo IV (Windows Preview) | ✅ Full installation through Waypoint's installer | 🧪 Native web login and intro cinematic checked; gameplay and performance not qualified | 🧪 Implemented, not yet tested |
+| Diablo II: Resurrected (Windows Preview) | 🧪 Implemented, not yet tested | 🧪 Implemented, not yet tested | 🧪 Implemented, not yet tested |
 
 ## Download
 
@@ -86,9 +90,10 @@ Play instead of bundling it into every Waypoint update. A verified cached copy
 works without another download. Windows HotS needs macOS 15+, Apple silicon and
 Rosetta; native games retain the macOS 14 minimum.
 
-Development builds can additionally test Windows-only Battle.net titles with
-`WINDOWS_EXPERIMENTAL=1`. These profiles are not enabled in public releases;
-see [profiles, components and qualification status](tools/wine-runtime/WINDOWS-TITLES.md).
+Public builds include Overwatch, Diablo IV and Diablo II: Resurrected as Preview
+profiles. `WINDOWS_EXPERIMENTAL=1` creates an isolated development app with a
+separate bundle identifier and no public update feed. See
+[profiles, components and qualification status](tools/wine-runtime/WINDOWS-TITLES.md).
 
 <details>
 <summary><b>Making a release</b></summary>
@@ -98,8 +103,8 @@ see [profiles, components and qualification status](tools/wine-runtime/WINDOWS-T
 With `--publish` it does what snippets does: the DMG and `appcast.xml` go to S3 (`storage.yandexcloud.net/macos-releases/waypoint/`), which is the update feed installed copies read, and the DMG is mirrored as a GitHub release. S3 credentials come from `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` or a gitignored `scripts/release.env`.
 
 ```sh
-# once: store notary credentials in the keychain (use an app-specific password)
-xcrun notarytool store-credentials NotaryProfile --apple-id <apple id> --team-id <team id>
+# use the existing notary keychain profile (the release script defaults to this)
+export NOTARY_KEYCHAIN_PROFILE=keys-cli-notary
 # …or use an App Store Connect API key instead: NOTARY_KEY=<.p8> NOTARY_KEY_ID=<id> NOTARY_ISSUER=<uuid>
 
 scripts/release.sh 0.1.0             # → dist/Waypoint-0.1.0.dmg + .sha256

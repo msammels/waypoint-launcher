@@ -38,6 +38,7 @@ Battle.net для Mac до сих пор собран только под Intel.
 ## Возможности
 
 - **Бесплатная Windows-версия HotS.** Waypoint рекомендует Windows-версию Heroes of the Storm: установка, Play и сохранённые аккаунты работают в привычном нативном интерфейсе. CrossOver и платная лицензия не нужны. Компонент Windows загружается при первом Play и остаётся в проверенном локальном кэше; само приложение и его обновления остаются небольшими. Для Windows-игры требуются Rosetta и macOS 15+; macOS-версию можно выбрать в той же строке. [Исходники и сборка компонента](tools/wine-runtime/README.md).
+- **Windows-игры Battle.net в Preview.** Overwatch, Diablo IV и Diablo II: Resurrected устанавливаются и запускаются через тот же нативный интерфейс и официальный веб-логин. Нужны Apple silicon, Rosetta и macOS 26.5+. Графические компоненты загружаются по запросу после принятия их лицензии. Запуск Overwatch и вход в Diablo IV проверены; Diablo II: Resurrected пока не тестировалась. Требования Blizzard к аккаунту, включая SMS Protect в Overwatch, когда он требуется, сохраняются.
 
 - **Нативный.** Написан на Swift и собран только под arm64.
 - **Вход один раз на аккаунт.** Через официальный веб-логин Battle.net. Дальше каждый запуск — в один клик.
@@ -58,6 +59,9 @@ Battle.net для Mac до сих пор собран только под Intel.
 | Warcraft III: Reforged | ✅ Проверено: те же файлы, что и в установке самого Battle.net | ✅ Проверено. Сама игра только под Intel, поэтому идёт через Rosetta | 🧪 Через Waypoint. Проверено починкой установок Waypoint и Battle.net; новой сборки пока не выходило |
 | World of Warcraft: Retail, Classic, Classic Era, Anniversary | 🧪 Реализовано, ещё не проверено | 🧪 Реализовано, ещё не проверено | 🧪 Реализовано, ещё не проверено |
 | StarCraft II, StarCraft: Remastered, Diablo III, Heroes of the Storm | 🧪 Реализовано, ещё не проверено | 🧪 Реализовано, ещё не проверено | 🧪 Реализовано, ещё не проверено |
+| Overwatch (Windows Preview) | ✅ Установлена через установщик Waypoint | 🧪 Проверены запуск, веб-логин и полный экран Retina; проверка остановилась на SMS Protect | 🧪 Реализовано, ещё не проверено |
+| Diablo IV (Windows Preview) | ✅ Полная установка через установщик Waypoint | 🧪 Проверены веб-логин и вступительный ролик; геймплей и производительность ещё не проверены | 🧪 Реализовано, ещё не проверено |
+| Diablo II: Resurrected (Windows Preview) | 🧪 Реализовано, ещё не проверено | 🧪 Реализовано, ещё не проверено | 🧪 Реализовано, ещё не проверено |
 
 ## Скачать
 
@@ -86,8 +90,8 @@ open build/Waypoint.app
 С `--publish` скрипт делает то же, что snippets: DMG и `appcast.xml` уходят в S3 (`storage.yandexcloud.net/macos-releases/waypoint/`) — это фид обновлений, который читают установленные копии, а DMG дублируется в GitHub Releases. Ключи S3 берутся из `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` или из `scripts/release.env` (в .gitignore).
 
 ```sh
-# один раз: сохранить данные для нотаризации в Keychain (нужен app-specific пароль)
-xcrun notarytool store-credentials NotaryProfile --apple-id <apple id> --team-id <team id>
+# существующий профиль Keychain (скрипт релиза использует его по умолчанию)
+export NOTARY_KEYCHAIN_PROFILE=keys-cli-notary
 # …или ключ App Store Connect API: NOTARY_KEY=<.p8> NOTARY_KEY_ID=<id> NOTARY_ISSUER=<uuid>
 
 scripts/release.sh 0.1.0             # → dist/Waypoint-0.1.0.dmg + .sha256

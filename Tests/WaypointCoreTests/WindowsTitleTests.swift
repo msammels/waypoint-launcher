@@ -35,20 +35,19 @@ private func windowsFixture(_ title: WindowsTitle) throws -> Data {
     #expect(WindowsTitle.forInstall(ProductInstall(uid: "wow", productCode: "wow", installPath: "/not-installed", platform: .windows)) == nil)
 }
 
-@Test func unqualifiedTitlesStayOutOfThePublicCatalog() {
+@Test func publicWindowsPreviewsRemainDistinctFromQualifiedProfiles() {
     #expect(WindowsTitle.heroes.isEnabled)
+    #expect(WindowsTitle.heroes.isQualified)
     #expect(WindowsTitle.heroes.minimumOS.majorVersion == 15)
     for title in [WindowsTitle.overwatch, .diabloII, .diabloIV] {
         #expect(title.minimumOS.majorVersion == 26)
         #expect(title.minimumOS.minorVersion == 5)
-        #if WAYPOINT_WINDOWS_EXPERIMENTAL
+        #expect(!title.isQualified)
+    }
+    for title in [WindowsTitle.overwatch, .diabloII, .diabloIV] {
         #expect(title.isEnabled)
         #expect(InstallableProduct.forProduct(title.rawValue) != nil)
-        #else
-        #expect(!title.isEnabled)
-        #expect(InstallableProduct.forProduct(title.rawValue) == nil)
-        #expect(!GameLibrary.defaultSearchRoots.contains { $0.lastPathComponent == title.folderName + " (Windows)" })
-        #endif
+        #expect(GameLibrary.defaultSearchRoots.contains { $0.lastPathComponent == title.folderName + " (Windows)" })
     }
 }
 

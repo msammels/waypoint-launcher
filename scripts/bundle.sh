@@ -15,8 +15,9 @@
 #                  build/windows-runtime-release/distribution if present).
 #                  A staged full runtime remains supported for local builds.
 #                  Set to "none" to omit Windows HotS support.
-#   WINDOWS_EXPERIMENTAL=1 enables unqualified Battle.net Windows profiles in
-#                  local builds, including their title bridge and graphics descriptor.
+#   WINDOWS_EXPERIMENTAL=1 isolates a development build with a separate
+#                  bundle identifier and no public update feed. Public Windows
+#                  Overwatch and Diablo profiles retain Preview labels.
 #
 # Uses Xcode's toolchain: open-source toolchains may not match the installed SDK.
 set -euo pipefail
@@ -62,6 +63,10 @@ ditto "$bin_dir/Sparkle.framework" "$sparkle"
 rm -rf "$sparkle/Versions/B/XPCServices" "$sparkle/XPCServices"
 
 sparkle_keys="    <key>SUPublicEDKey</key><string>${sparkle_public_key}</string>"
+windows_experimental=""
+if [[ "${WINDOWS_EXPERIMENTAL:-0}" == "1" ]]; then
+    windows_experimental="    <key>WaypointWindowsExperimental</key><true/>"
+fi
 if [[ -n "$feed" ]]; then
     # Check, download and install without asking; Waypoint shows progress
     # inline and installs on quit (see AppUpdater.swift).
@@ -92,6 +97,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <!-- Installs and updates allocate big buffers; malloc's large cache would
          keep them dirty after they're freed (80 MB vs 6 MB idle afterwards). -->
     <key>LSEnvironment</key><dict><key>MallocLargeCache</key><string>0</string></dict>
+${windows_experimental}
 ${sparkle_keys}
 </dict>
 </plist>
@@ -123,7 +129,6 @@ elif [[ -n "${WINDOWS_RUNTIME:-}" && "$windows_runtime" != "none" ]]; then
     exit 1
 fi
 if [[ -d "$app/Contents/SharedSupport/Windows" || -d "$app/Contents/Resources/WindowsRuntime" ]]; then
-    if [[ "${WINDOWS_EXPERIMENTAL:-0}" == "1" ]]; then
     # The per-title bridge is small and independent of the cached Wine engine.
     scripts/build-windows-helper.sh build/windows-bridge --titles
     mkdir -p "$app/Contents/Resources/WindowsBridge"
@@ -142,7 +147,6 @@ assert hashlib.sha256((p/"License.rtf").read_bytes()).hexdigest()==m["files"]["L
 PYGRAPHICS
     mkdir -p "$app/Contents/Resources/WindowsGraphics"
     cp Resources/WindowsGraphics/manifest.json Resources/WindowsGraphics/License.rtf "$app/Contents/Resources/WindowsGraphics/"
-    fi
     sign --entitlements tools/wine-runtime/waypoint.entitlements "$app"
 else
     sign "$app"

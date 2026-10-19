@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import plistlib
 from pathlib import Path
 
 
@@ -51,6 +52,27 @@ def main():
             raise RuntimeError("Built app refers to another Windows component")
         if (a.app / "Contents/SharedSupport/Windows").exists():
             raise RuntimeError("The release must download Windows components on demand")
+        info = plistlib.loads((a.app / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != "dev.waypoint.launcher" or info.get("WaypointWindowsExperimental"):
+            raise RuntimeError("The public release must use the production bundle and catalog")
+        if info.get("SUFeedURL") != "https://storage.yandexcloud.net/macos-releases/waypoint/appcast.xml":
+            raise RuntimeError("The public release must use the production update feed")
+        resources = a.app / "Contents/Resources"
+        bridge = resources / "WindowsBridge"
+        if {f.name for f in bridge.iterdir()} != {"manifest.json", "waypoint-launch-options.exe"}:
+            raise RuntimeError("Unexpected title bridge resources")
+        manifest = json.loads((bridge / "manifest.json").read_text())
+        if manifest.get("schema") != 2 or sha(bridge / "waypoint-launch-options.exe") != manifest.get("sha256"):
+            raise RuntimeError("Title bridge differs from its sealed descriptor")
+        graphics = resources / "WindowsGraphics"
+        pinned = Path(__file__).resolve().parent.parent / "Resources/WindowsGraphics"
+        if {f.name for f in graphics.iterdir()} != {"manifest.json", "License.rtf"}:
+            raise RuntimeError("Only the graphics descriptor and original license may be bundled")
+        if sha(graphics / "manifest.json") != sha(pinned / "manifest.json"):
+            raise RuntimeError("Graphics descriptor differs from the pinned component")
+        manifest = json.loads((graphics / "manifest.json").read_text())
+        if sha(graphics / "License.rtf") != manifest["files"]["License.rtf"]:
+            raise RuntimeError("Graphics license differs from the pinned component")
     print("Windows runtime, corresponding sources and sealed descriptor match")
 
 

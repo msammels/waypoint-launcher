@@ -1,10 +1,11 @@
-# Experimental Windows Battle.net titles
+# Windows Battle.net titles
 
-The default release still enables only the qualified Windows HotS profile.
-`WINDOWS_EXPERIMENTAL=1 scripts/bundle.sh` adds Overwatch, Diablo IV and Diablo
-II: Resurrected to a development build. A runtime path override does not enable
-these profiles in an ordinary release. Keep each new title gated until its
-installation, Waypoint login and real rendering have been checked.
+Waypoint 0.6.0 includes Overwatch, Diablo IV and Diablo II: Resurrected as public
+Preview profiles alongside Windows HotS. Availability is separate from full
+gameplay qualification: the new profiles retain their Preview labels. Diablo
+II: Resurrected is included without a real launch test. `WINDOWS_EXPERIMENTAL=1
+scripts/bundle.sh` creates an isolated development app with a separate bundle
+identifier and no public update feed; it is not required to enable these games.
 
 | Product | Install uid | Web/registry codename | Graphics | Current minimum |
 | --- | --- | --- | --- | --- |
@@ -48,7 +49,7 @@ account databases or credentials from another Wine prefix are needed.
 
 ## Optional Apple graphics component
 
-The experimental app packages only a pinned manifest and the original license
+The app packages only a pinned manifest and the original license
 text. On first use it presents the license in a native AppKit dialog. Acceptance
 is keyed to the SHA-256 of the displayed bytes, which must match the downloaded
 component's license. No Apple binaries are embedded in Waypoint or the existing
@@ -83,7 +84,8 @@ to the same `lib/external/libd3dshared.dylib` inside the overlay.
 Interrupted component acquisition cannot boot an empty prefix with the base
 engine: the session commits its prepared component paths together. Experimental
 bundles default to a separate identifier and no update feed, including signed
-builds. The public release pipeline rejects experimental profiles and resources.
+builds. The public release pipeline rejects experimental app bundles and checks
+the title bridge, graphics descriptor and original license before publication.
 
 ## Qualification evidence
 
@@ -92,6 +94,16 @@ component, prepared an isolated Diablo prefix and created a D3D12 feature-level
 12.0 device through the private Metal engine. Reusing the verified cache also
 succeeded. This is an infrastructure smoke test, not evidence of Diablo login,
 license ownership, gameplay, performance or anti-cheat compatibility.
+
+Later that day Diablo IV 3.2.3.73883 completed a full 171,154,757,479-byte
+installation through the existing installer, including its storage verification
+and finalization. An isolated test transport used curl for CDN transfers before
+production installer finalization. Native Waypoint Play, its official web login
+and the per-title SSO handoff opened the game through D3DMetal. The game reported
+After Login and played its introductory cinematic; the tester confirmed entry.
+That first login took about three minutes. Character gameplay, sustained frame
+rate and purchased-account entitlement beyond that entry remain unqualified.
+Diablo II: Resurrected has not had a real install/login/rendering test.
 
 The first complete Overwatch installation (2.25.0.0.154088) and native Waypoint
 sign-in succeeded, but the game process stalled before creating a window.
