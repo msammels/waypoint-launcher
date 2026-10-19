@@ -17,8 +17,9 @@ final class AppModel {
 
         static func == (a: Phase, b: Phase) -> Bool {
             switch (a, b) {
-            case (.idle, .idle), (.signingIn, .signingIn), (.preparingWindows, .preparingWindows), (.launching, .launching),
+            case (.idle, .idle), (.signingIn, .signingIn), (.launching, .launching),
                  (.updating, .updating), (.pausing, .pausing), (.paused, .paused): true
+            case (.preparingWindows(let x), .preparingWindows(let y)): x == y
             case (.failed(let x), .failed(let y)): x == y
             default: false
             }

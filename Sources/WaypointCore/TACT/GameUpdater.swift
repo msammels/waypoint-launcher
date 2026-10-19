@@ -38,7 +38,7 @@ public struct UpdatePlan: Sendable {
     public var isEmpty: Bool { files.isEmpty && deletions.isEmpty }
 }
 
-public struct UpdateProgress: Sendable {
+public struct UpdateProgress: Sendable, Equatable {
     public var completedBytes: UInt64
     public var totalBytes: UInt64
     public var completedFiles: Int
