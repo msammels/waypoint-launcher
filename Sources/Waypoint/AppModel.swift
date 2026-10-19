@@ -408,6 +408,21 @@ final class AppModel {
                 try GameLauncher.launch(plan, token: token, gameName: game.displayName)
             }
             UserDefaults.standard.set(game.id, forKey: Self.lastPlayedKey)
+            if let title = WindowsTitle.forInstall(game.install), title != .heroes, let session {
+                // A Wine process may stall before creating its first window.
+                // Keep the process tracked to prevent duplicate launches, but
+                // don't present that as a completed launch.
+                let result = await waitForWindowsWindow(game, title: title)
+                guard !Task.isCancelled else { return }
+                refreshRunning()
+                Log.info(.launch, result == .created ? "window_created" : "window_missing", nil,
+                         ["uid": game.id, "reason": result.rawValue])
+                phases[game.id] = result == .created ? .idle : .failed(result == .stalled
+                    ? "The game has not opened a window. If its process is still running, quit it in Activity Monitor before trying again."
+                    : "The game exited before opening a window.")
+                if result == .stalled { watchForLateWindowsWindow(game, title: title, session: session) }
+                return
+            }
             // Keep "launching" until the game shows up in the running list.
             try? await Task.sleep(for: .seconds(4))
             refreshRunning()
@@ -809,6 +824,52 @@ final class AppModel {
                 return
             }
             try? await Task.sleep(for: .milliseconds(250))
+        }
+    }
+
+    private enum WindowsWindowWait: String { case created, exited, stalled }
+
+    private func waitForWindowsWindow(_ game: Game, title: WindowsTitle) async -> WindowsWindowWait {
+        let root = URL(fileURLWithPath: game.install.installPath)
+        var seenProcess = false
+        for attempt in 0..<180 {
+            guard !Task.isCancelled else { return .stalled }
+            if hasWindowsWindow(game, title: title) { return .created }
+            if WineProcesses.gameAndLaunchers(in: root, title: title).isEmpty {
+                if seenProcess || attempt >= 30 { return .exited }
+            } else { seenProcess = true }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        return .stalled
+    }
+
+    private func hasWindowsWindow(_ game: Game, title: WindowsTitle) -> Bool {
+        let pids = Set(WineProcesses.gameCore(in: URL(fileURLWithPath: game.install.installPath), title: title))
+        guard !pids.isEmpty else { return false }
+        let windows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.contains { window in
+            guard let owner = window[kCGWindowOwnerPID as String] as? Int32, pids.contains(owner),
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double else { return false }
+            // Fullscreen Wine windows can be floating or shielding level.
+            return width > 1 && height > 1
+        }
+    }
+
+    private func watchForLateWindowsWindow(_ game: Game, title: WindowsTitle, session: WindowsGameSession) {
+        Task { [weak self] in
+            while !Task.isCancelled {
+                if let self {
+                    guard self.windowsSessions[game.id] === session else { return }
+                    guard case .failed = self.phases[game.id] else { return }
+                    if self.hasWindowsWindow(game, title: title) {
+                        self.phases[game.id] = .idle
+                        Log.info(.launch, "window_created_late", nil, ["uid": game.id])
+                        return
+                    }
+                } else { return }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
     }
 

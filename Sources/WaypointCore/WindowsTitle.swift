@@ -96,7 +96,9 @@ public enum WindowsTitle: String, CaseIterable, Sendable {
     }
 
     var minimumOS: OperatingSystemVersion {
-        backend == .d3dMetal
+        // Preserve HotS's qualified host range. Recall documents 26.5 as the
+        // Overwatch minimum: https://github.com/AsherJN/recall#Get-started
+        self != .heroes
             ? OperatingSystemVersion(majorVersion: 26, minorVersion: 5, patchVersion: 0)
             : OperatingSystemVersion(majorVersion: 15, minorVersion: 0, patchVersion: 0)
     }

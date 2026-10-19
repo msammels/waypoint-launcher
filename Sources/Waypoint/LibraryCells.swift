@@ -70,9 +70,18 @@ final class GameCell: NSView {
         self.model = model
         let game = state.game
         let app = game.appURL ?? (game.install.productCode == "hero" ? model.heroesEdition(.macOS)?.appURL : nil)
-        if icon.image == nil || iconPath != app?.path {
-            iconPath = app?.path
-            icon.image = iconPath.map { NSWorkspace.shared.icon(forFile: $0) } ?? NSWorkspace.shared.icon(for: .applicationBundle)
+        let windows = WindowsTitle.forInstall(game.install).map {
+            URL(fileURLWithPath: game.install.installPath).appendingPathComponent($0.executablePath)
+        }
+        let path = app?.path ?? windows?.path
+        if icon.image == nil || iconPath != path {
+            iconPath = path
+            if app == nil, let windows, let data = WindowsExecutableIcon.data(at: windows), let image = NSImage(data: data) {
+                icon.image = image
+            } else {
+                if app == nil, windows != nil { iconPath = nil }
+                icon.image = path.map { NSWorkspace.shared.icon(forFile: $0) } ?? NSWorkspace.shared.icon(for: .applicationBundle)
+            }
         }
         name.stringValue = game.displayName
         edition.isHidden = game.install.productCode != "hero" || (!WindowsHeroes.isAvailable && model.heroesEdition(.windows) == nil)
@@ -125,7 +134,11 @@ final class GameCell: NSView {
         case .updating, .pausing, .paused: true
         default: false
         }
-        if state.isRunning, !hasDownloadControls {
+        if state.isRunning, case .launching = state.phase, !hasDownloadControls {
+            showSpinner("Starting…")
+        } else if state.isRunning, case .failed = state.phase, !hasDownloadControls {
+            show(status: "Needs attention")
+        } else if state.isRunning, !hasDownloadControls {
             show(status: "Running")
         } else if !game.isSupported, !hasDownloadControls {
             show(status: !game.isInstalled ? "Not installed" : (game.install.platform == .windows ? "Windows support unavailable" : (game.runsNatively ? "Unsupported" : "Needs Rosetta")))

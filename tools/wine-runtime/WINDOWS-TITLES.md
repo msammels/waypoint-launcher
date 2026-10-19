@@ -9,11 +9,11 @@ installation, Waypoint login and real rendering have been checked.
 | Product | Install uid | Web/registry codename | Graphics | Current minimum |
 | --- | --- | --- | --- | --- |
 | Heroes of the Storm (`hero`) | `heroes` | `Hero` | DXMT 0.80 | macOS 15, Apple silicon, Rosetta |
-| Overwatch (`pro`) | `prometheus` | `Pro` | DX11 through DXMT | macOS 15, Apple silicon, Rosetta |
+| Overwatch (`pro`) | `prometheus` | `Pro` | DX11 through DXMT | macOS 26.5, Apple silicon, Rosetta |
 | Diablo IV (`fenris`) | `fenris` | `Fen` | D3DMetal 3.0 | macOS 26.5, Apple silicon, Rosetta |
 | Diablo II: Resurrected (`osi`) | `osi` | `OSI` | D3DMetal 3.0 | macOS 26.5, Apple silicon, Rosetta |
 
-The Diablo minimum is a conservative qualification target, not a claim that
+The new profiles' minimum is a conservative qualification target, not a claim that
 the graphics component itself cannot run on earlier macOS. New profiles must
 not inherit HotS's spoofed adapter IDs or 120 FPS cap. Overwatch disables D3D12
 so the DX11 profile is explicit. Game compatibility is separate from creating
@@ -88,6 +88,15 @@ component, prepared an isolated Diablo prefix and created a D3D12 feature-level
 succeeded. This is an infrastructure smoke test, not evidence of Diablo login,
 license ownership, gameplay, performance or anti-cheat compatibility.
 
+The first complete Overwatch installation (2.25.0.0.154088) and native Waypoint
+sign-in succeeded, but the game process stalled before creating a window.
+Direct launches reproduced the stall with MSync disabled, write-copy simulation
+disabled, AVX advertisement disabled and a conventional C: path. A separate
+Recall 1.4 engine with a fresh prefix also reproduced it. The cause remains
+unconfirmed; no rendering or gameplay qualification has passed. Preview launches
+now stay in Starting until an owned game window exists, and report a missing
+window after 90 seconds while retaining process tracking to block duplicates.
+
 A held-device probe also confirmed the Apple framework and Unix library mapped
 from the overlay. With `WINEDLLPATH` unset, a synthetic game-shaped probe was
 visible to both the per-game and global owned-process guards. Source and fixes
@@ -103,6 +112,7 @@ cleanup. Run it separately with an installed compatible Wine engine.
 Useful primary references for launch identifiers:
 
 - [Blizzard Overwatch launch log showing `-uid prometheus`](https://us.forums.blizzard.com/en/overwatch/t/game-wont-start-after-todays-patch-0xc000007b/935900/28)
+- [Recall's documented macOS 26.5 minimum](https://github.com/AsherJN/recall#Get-started)
 - [Battle.net GOG integration implementation](https://github.com/bartok765/galaxy_blizzard_plugin)
 
 Keep account identifiers, tokens, private qualification logs and screenshots

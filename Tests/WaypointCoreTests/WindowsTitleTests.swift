@@ -37,7 +37,10 @@ private func windowsFixture(_ title: WindowsTitle) throws -> Data {
 
 @Test func unqualifiedTitlesStayOutOfThePublicCatalog() {
     #expect(WindowsTitle.heroes.isEnabled)
+    #expect(WindowsTitle.heroes.minimumOS.majorVersion == 15)
     for title in [WindowsTitle.overwatch, .diabloII, .diabloIV] {
+        #expect(title.minimumOS.majorVersion == 26)
+        #expect(title.minimumOS.minorVersion == 5)
         #if WAYPOINT_WINDOWS_EXPERIMENTAL
         #expect(title.isEnabled)
         #expect(InstallableProduct.forProduct(title.rawValue) != nil)
