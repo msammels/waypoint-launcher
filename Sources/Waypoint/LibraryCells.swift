@@ -76,13 +76,11 @@ final class GameCell: NSView {
         let path = app?.path ?? windows?.path
         if icon.image == nil || iconPath != path {
             iconPath = path
-            if app == nil, let windows, let data = WindowsExecutableIcon.data(at: windows), let image = NSImage(data: data) {
-                icon.image = image
-                icon.usesWindowsTile = true
+            if app == nil, let windows, let data = WindowsExecutableIcon.data(at: windows), NSImage(data: data) != nil {
+                icon.showWindowsArtwork(data)
             } else {
-                icon.usesWindowsTile = false
                 if app == nil, windows != nil { iconPath = nil }
-                icon.image = path.map { NSWorkspace.shared.icon(forFile: $0) } ?? NSWorkspace.shared.icon(for: .applicationBundle)
+                icon.showFileIcon(at: path)
             }
         }
         name.stringValue = game.displayName
