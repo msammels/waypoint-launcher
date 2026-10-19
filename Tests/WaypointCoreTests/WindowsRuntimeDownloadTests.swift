@@ -31,7 +31,7 @@ private struct RuntimeFixture {
         try await ChildCommand.run(executable: URL(fileURLWithPath: "/usr/bin/ditto"),
             arguments: ["-c", "-k", "--keepParent", app.path, archive.path], directory: directory, environment: [:])
         descriptor = WindowsRuntimeDistribution(schema: 1,
-            url: URL(string: "https://storage.yandexcloud.net/macos-releases/waypoint/windows/fixture.zip")!,
+            url: URL(string: "https://storage.yandexcloud.net/macos-releases/waypoint/windows/\(try WindowsHeroes.sha256(archive)).zip")!,
             bytes: Int64(try archive.resourceValues(forKeys: [.fileSizeKey]).fileSize!),
             sha256: try WindowsHeroes.sha256(archive),
             manifestSHA256: SHA256.hash(data: manifestData).map { String(format: "%02x", $0) }.joined())
@@ -80,11 +80,14 @@ private actor FetchCounter {
         Issue.record("A valid cache must work without a network request"); throw URLError(.notConnectedToInternet)
     })
     #expect(first == second)
+    let abandoned = fixture.cache.appendingPathComponent(".download-" + UUID().uuidString)
+    try FileManager.default.createDirectory(at: abandoned, withIntermediateDirectories: true)
     try Data("damaged cache".utf8).write(to: first.appendingPathComponent("wine/bin/wine"))
     let repaired = try await WindowsRuntimeDownload.prepare(from: fixture.resources, cacheRoot: fixture.cache, fetch: fetch)
     #expect(repaired == first)
     #expect(try String(contentsOf: repaired.appendingPathComponent("wine/bin/wine"), encoding: .utf8) == "fixture wine")
     #expect(await count.calls == 2)
+    #expect(!FileManager.default.fileExists(atPath: abandoned.path))
 }
 
 @Test func onDemandRejectsTamperedArchiveBeforeExtraction() async throws {
@@ -115,17 +118,17 @@ private actor FetchCounter {
 
 @Test func onDemandRejectsUnsafeDistributionURLsAndSizes() throws {
     var d = WindowsRuntimeDistribution(schema: 1,
-        url: URL(string: "https://storage.yandexcloud.net/macos-releases/waypoint/windows/runtime.zip")!,
+        url: URL(string: "https://storage.yandexcloud.net/macos-releases/waypoint/windows/\(String(repeating: "a", count: 64)).zip")!,
         bytes: 100, sha256: String(repeating: "a", count: 64), manifestSHA256: String(repeating: "b", count: 64))
     try d.validate()
-    for value in ["http://storage.yandexcloud.net/macos-releases/waypoint/windows/a.zip",
-                  "https://example.com/macos-releases/waypoint/windows/a.zip",
-                  "https://storage.yandexcloud.net/another-app/a.zip",
-                  "https://storage.yandexcloud.net/macos-releases/waypoint/windows/a.zip?latest=1"] {
+    for value in ["http://storage.yandexcloud.net/macos-releases/waypoint/windows/\(d.sha256).zip",
+                  "https://example.com/macos-releases/waypoint/windows/\(d.sha256).zip",
+                  "https://storage.yandexcloud.net/another-app/\(d.sha256).zip",
+                  "https://storage.yandexcloud.net/macos-releases/waypoint/windows/\(d.sha256).zip?latest=1"] {
         d.url = URL(string: value)!
         #expect(throws: WindowsHeroes.Failure.invalidRuntime) { try d.validate() }
     }
-    d.url = URL(string: "https://storage.yandexcloud.net/macos-releases/waypoint/windows/a.zip")!
+    d.url = URL(string: "https://storage.yandexcloud.net/macos-releases/waypoint/windows/\(d.sha256).zip")!
     d.bytes = 536_870_913
     #expect(throws: WindowsHeroes.Failure.invalidRuntime) { try d.validate() }
 }

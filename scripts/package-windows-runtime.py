@@ -36,12 +36,18 @@ def main():
     p.add_argument("--version", required=True)
     p.add_argument("--identity", default=IDENTITY)
     p.add_argument("--notary-profile", default="keys-cli-notary")
+    p.add_argument("--freetype-headers", type=Path, default=Path("/opt/homebrew/Cellar/freetype/2.14.3/include"))
     a = p.parse_args()
     import re
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version):
         raise RuntimeError("Expected a numeric component version")
     if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
         raise RuntimeError("Commit the release recipes before packaging")
+    headers = a.freetype_headers.resolve()
+    text = (headers / "freetype2/freetype/freetype.h").read_text()
+    ft_version = ".".join(re.search(rf"#define\s+FREETYPE_{k}\s+(\d+)", text)[1] for k in ("MAJOR", "MINOR", "PATCH"))
+    if ft_version != "2.14.3":
+        raise RuntimeError("Wine was compiled with FreeType 2.14.3 headers, found " + ft_version)
     out = a.output.resolve()
     if out.exists():
         raise RuntimeError("Use a new output directory; published component bytes are immutable")
@@ -70,15 +76,16 @@ def main():
         run(["git", "archive", "--format=tar.gz", "-o", tree / "waypoint-source.tar.gz", commit], cwd=ROOT)
         shutil.copytree(ROOT / "tools/wine-runtime", tree / "notices-and-patches")
         (tree / "runtime-build.json").write_text(json.dumps(info, indent=2) + "\n")
-        headers = Path("/opt/homebrew/opt/freetype/include")
-        if headers.is_dir():
-            shutil.copytree(headers, tree / "build-headers/freetype")
+        shutil.copytree(headers, tree / "build-headers/freetype")
         shutil.copy2(ROOT / "tools/wine-runtime/SOURCE-README.md", tree / "README.md")
         sums = [f"{sha(f)}  {f.relative_to(tree)}" for f in sorted(tree.rglob("*")) if f.is_file()]
         (tree / "SHA256SUMS").write_text("\n".join(sums) + "\n")
         with tarfile.open(out / source_name, "w") as t:
             t.add(tree, arcname=tree.name)
     source_hash = sha(out / source_name)
+    final_source_name = f"Waypoint-Windows-{source_hash}-sources.tar"
+    (out / source_name).rename(out / final_source_name)
+    source_name = final_source_name
     app = out / "Waypoint Windows Runtime.app"
     resources = app / "Contents/Resources/Windows"
     resources.parent.mkdir(parents=True)
@@ -111,6 +118,7 @@ def main():
     result = subprocess.run(["xcrun", "notarytool", "submit", str(archive), "-p", a.notary_profile,
                              "--wait", "--timeout", "1h", "--output-format", "json"], capture_output=True, text=True)
     (out / "notarization.json").write_text(result.stdout)
+    (out / "notarization-error.log").write_text(result.stderr)
     if result.returncode or json.loads(result.stdout).get("status") != "Accepted":
         raise RuntimeError("Component notarization failed; inspect " + str(out / "notarization.json"))
     run(["xcrun", "stapler", "staple", app])
@@ -119,9 +127,13 @@ def main():
     # Stapling changes the wrapper: the downloadable hash is computed last.
     archive.unlink()
     run(["ditto", "-c", "-k", "--keepParent", app, archive])
+    digest = sha(archive)
+    addressed = out / f"Waypoint-Windows-{digest}.zip"
+    archive.rename(addressed)
+    archive = addressed
     manifest_hash = sha(resources / "runtime.json")
     descriptor = {"schema": 1, "url": BASE + archive.name, "bytes": archive.stat().st_size,
-                  "sha256": sha(archive), "manifestSHA256": manifest_hash,
+                  "sha256": digest, "manifestSHA256": manifest_hash,
                   "sourceURL": BASE + source_name, "sourceSHA256": source_hash}
     distribution = out / "distribution"
     distribution.mkdir()

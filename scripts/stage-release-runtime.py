@@ -24,6 +24,9 @@ def main():
     recipe = json.loads((deps / "recipe.json").read_text())
     if recipe["recipeSHA256"] != build.sha(ROOT / "scripts/build-runtime-deps.py"):
         raise RuntimeError("Dependency build recipe changed; rebuild before staging")
+    for name, expected in recipe["outputSHA256"].items():
+        if build.sha(deps / "prefix/lib" / name) != expected:
+            raise RuntimeError("Built dependency changed after compilation: " + name)
     if output.exists():
         shutil.rmtree(output)
     shutil.copytree(source, output, symlinks=True)
@@ -53,6 +56,7 @@ def main():
     info["libraries"] = sorted(f.name for f in lib.glob("*.dylib"))
     info["selfBuiltDependencies"] = json.loads(json.dumps(recipe).replace(str(deps), "${DEPS_WORK}"))
     info["selfBuiltDependencies"]["preSignLibrarySHA256"] = {name: build.sha(lib / name) for name in sorted(required)}
+    info["selfBuiltDependencies"]["stagingRecipeSHA256"] = build.sha(Path(__file__).resolve())
     info["permissiveBinaryDependencies"] = {"archive": info["sources"]["dependencies"],
         "regularLibraries": sorted(f.name for f in lib.glob("*.dylib") if not f.is_symlink() and f.name.startswith(permissive))}
     info["sources"].pop("dependencies")

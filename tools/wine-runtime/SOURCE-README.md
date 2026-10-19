@@ -9,7 +9,7 @@ The native launcher source and all build/signing/staging scripts are in
 
 Wine is built from CodeWeavers' CrossOver 26.3 LGPL source release, with the
 included Waypoint startup patch. The runtime uses public DXMT 0.80. GnuTLS
-3.8.7, Nettle 3.10.1 and GMP 6.3.0 are built from the included pristine archives.
+3.8.13, Nettle 3.10.1 and GMP 6.3.0 are built from the included pristine archives.
 GnuTLS's bundled libtasn1, libunistring and gnulib sources are within its archive.
 No MacPorts-built LGPL library is redistributed in this component. FreeType,
 MoltenVK and their remaining binary dependencies use permissive licenses; their
@@ -38,7 +38,11 @@ Apple Developer ID is unnecessary for a personal local build.
 
 ## Use a modified compatible LGPL library
 
-Copy the complete runtime directory to your own folder. Replace the desired
+Extract `Waypoint-Windows-<sha256>.zip` and copy its complete
+`Waypoint Windows Runtime.app/Contents/Resources/Windows` directory to your own
+folder. The installed copy also lives under
+`~/Library/Application Support/Waypoint/Runtimes/heroes-<manifest-sha256>`.
+Replace the desired
 library with your compatible build, keeping its expected install name/ABI and
 local `@rpath` dependencies. Generate a fresh manifest and ad-hoc signatures:
 

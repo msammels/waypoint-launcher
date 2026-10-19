@@ -341,7 +341,11 @@ final class AppModel {
 
     /// Only one sign-in at a time: the login window and the hidden web view
     /// each serve a single request.
-    var isSigningIn: Bool { isAddingAccount || isManagingSavedLogin || phases.values.contains(.signingIn) || phases.values.contains(.preparingWindows(nil)) }
+    var isSigningIn: Bool {
+        isAddingAccount || isManagingSavedLogin || phases.values.contains {
+            switch $0 { case .signingIn, .preparingWindows: true; default: false }
+        }
+    }
 
     func canPlay(_ game: Game) -> Bool {
         game.isSupported && !isRunning(game) && !isBusy(game) && !isSigningIn

@@ -14,7 +14,7 @@ struct WindowsRuntimeDistribution: Codable, Sendable {
         guard schema == 1, url.scheme == "https", url.host == "storage.yandexcloud.net",
               url.user == nil, url.password == nil, url.port == nil,
               url.path.hasPrefix("/macos-releases/waypoint/windows/"),
-              url.path.hasSuffix(".zip"), url.query == nil, url.fragment == nil,
+              url.path.hasSuffix(sha256 + ".zip"), url.query == nil, url.fragment == nil,
               (1...536_870_912).contains(bytes),
               [sha256, manifestSHA256].allSatisfy({ $0.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil })
         else { throw WindowsHeroes.Failure.invalidRuntime }
@@ -36,6 +36,13 @@ enum WindowsRuntimeDownload {
             from: Data(contentsOf: resources.appendingPathComponent("distribution.json")))
         try distribution.validate()
         let cache = cacheRoot ?? WindowsHeroes.support.appendingPathComponent("Runtimes", isDirectory: true)
+        // The caller holds the prefix lease. A previous quit/crash cannot
+        // retain its lock, but can leave an interrupted extraction directory.
+        for item in (try? fm.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? [] {
+            if item.lastPathComponent.range(of: "^\\.download-[A-Fa-f0-9-]{36}$", options: .regularExpression) != nil {
+                try fm.removeItem(at: item)
+            }
+        }
         let cached = cache.appendingPathComponent("heroes-" + distribution.manifestSHA256)
         if let result = try? await Task.detached(operation: {
             try checkManifest(in: cached, distribution: distribution)
@@ -54,6 +61,7 @@ enum WindowsRuntimeDownload {
         guard try archive.resourceValues(forKeys: [.fileSizeKey]).fileSize == Int(distribution.bytes),
               try WindowsHeroes.sha256(archive) == distribution.sha256 else { throw WindowsHeroes.Failure.invalidRuntime }
         try Task.checkCancellation()
+        progress(UpdateProgress(completedBytes: UInt64(distribution.bytes), totalBytes: UInt64(distribution.bytes), completedFiles: 1, totalFiles: 1))
         try fm.createDirectory(at: cache, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let staging = cache.appendingPathComponent(".download-" + UUID().uuidString, isDirectory: true)
         try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])

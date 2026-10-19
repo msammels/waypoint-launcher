@@ -193,17 +193,25 @@ PY
     # Required-only checksums are compatible with the S3 provider's multipart API.
     export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
     assets=()
-    while IFS=$'\t' read -r name key bytes; do
-        s3 cp "$component/$name" "s3://$s3_bucket/$s3_prefix/$key" --only-show-errors
+    while IFS=$'\t' read -r name key bytes asset_sha; do
+        http_status="$(curl -sS -o /dev/null -w '%{http_code}' -I "$public_base/$key")"
+        case "$http_status" in
+            200) ;; # Never replace a component object already served to users.
+            404) s3 cp "$component/$name" "s3://$s3_bucket/$s3_prefix/$key" --only-show-errors --metadata "sha256=$asset_sha" </dev/null ;;
+            *) fail "can't check immutable component asset: HTTP $http_status ($name)" ;;
+        esac
+        [[ "$(curl -fsS "$public_base/$key" | shasum -a 256 | awk '{print $1}')" == "$asset_sha" ]] \
+            || fail "published component asset differs; refusing to replace it: $name"
         [[ "$(curl -fsI "$public_base/$key" | awk 'tolower($1) == "content-length:" { print $2 + 0 }')" == "$bytes" ]] \
             || fail "component asset isn't publicly served at the right size: $name"
         assets+=("$component/$name" "$component/$name.sha256")
     done < <(python3 - "$component/publication.json" <<'PY'
 import json,sys
 for a in json.load(open(sys.argv[1]))["assets"]:
-    print(a["name"],a["key"],a["bytes"],sep="\t")
+    print(a["name"],a["key"],a["bytes"],a["sha256"],sep="\t")
 PY
     )
+    (( ${#assets} == 4 )) || fail "not every component asset was published"
     step "Uploading to s3://$s3_bucket/$s3_prefix/"
     s3 cp "$dmg" "s3://$s3_bucket/$s3_prefix/${dmg:t}" --content-type application/x-apple-diskimage
     [[ "$(curl -fsI "$public_base/${dmg:t}" | awk 'tolower($1) == "content-length:" { print $2 + 0 }')" == "$(stat -f %z "$dmg")" ]] \

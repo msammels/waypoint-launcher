@@ -40,8 +40,10 @@
     "url": "https://raw.githubusercontent.com/coreutils/gnulib/master/doc/COPYING.LESSERv3"
   },
   "GnuTLS.txt": {
-    "sha256": "3e043d77917e48e262301b8f880812fcd82236482630a421d555a38804eee643",
-    "url": "https://raw.githubusercontent.com/gnutls/gnutls/3.8.7/LICENSE"
+    "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
+    "archivePath": "gnutls-3.8.13/README.md",
+    "sha256": "201b41208fb656845fe04b23b4aeedf79fee920390a7606a8f3e1a5ce6f64106",
+    "formatting": "Trailing whitespace removed from upstream README"
   },
   "Libffi-MIT.txt": {
     "sha256": "67894089811f93fca47a76f85e017da6f8582d4ba0905963c6e0f1ad6df7a195",
@@ -86,5 +88,20 @@
   "Zstd-BSD.txt": {
     "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8",
     "url": "https://raw.githubusercontent.com/facebook/zstd/v1.5.6/LICENSE"
+  },
+  "GnuTLS-inih-BSD.txt": {
+    "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
+    "archivePath": "gnutls-3.8.13/lib/inih/LICENSE.txt",
+    "sha256": "9ae3b39e83e9158e44b67733baa3bb2d84e80efdcfb14a5820210a42c7abdf7f"
+  },
+  "GnuTLS-crau-LICENSE.txt": {
+    "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
+    "archivePath": "gnutls-3.8.13/lib/crau/LICENSE",
+    "sha256": "b3c9aed2f5750f6bf698c74916d675d1734e12455b96bfdf6f90e23ab01595cd"
+  },
+  "GnuTLS-crau-UNLICENSE.txt": {
+    "url": "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.13.tar.xz",
+    "archivePath": "gnutls-3.8.13/lib/crau/UNLICENSE",
+    "sha256": "b5065838cbac452dfc855ba6e6e031481ad2c68406f70d21ead9321374653e6c"
   }
 }

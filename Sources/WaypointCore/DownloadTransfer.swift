@@ -12,6 +12,7 @@ final class DownloadTransfer: NSObject, URLSessionDownloadDelegate, @unchecked S
     private var cancelled = false
     private var file: URL?
     private var fileError: Error?
+    private var lastProgressTime: TimeInterval = 0
 
     init(limiter: DownloadBandwidthLimiter, maximumBytes: Int64? = nil,
          progress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) {
@@ -62,7 +63,15 @@ final class DownloadTransfer: NSObject, URLSessionDownloadDelegate, @unchecked S
             downloadTask.cancel()
             return
         }
-        progress(totalBytesWritten, totalBytesExpectedToWrite)
+        let now = ProcessInfo.processInfo.systemUptime
+        let report = lock.withLock {
+            if now - lastProgressTime >= 0.1 || (totalBytesExpectedToWrite > 0 && totalBytesWritten >= totalBytesExpectedToWrite) {
+                lastProgressTime = now
+                return true
+            }
+            return false
+        }
+        if report { progress(totalBytesWritten, totalBytesExpectedToWrite) }
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {

@@ -10,7 +10,7 @@ The runtime's `source.json` pins every input archive and the applied Wine patch.
 | DXMT 0.80 | MIT, with zlib-licensed DXVK utilities | https://github.com/3Shain/dxmt/tree/v0.80 |
 | LLVM 15.0.7 (linked by DXMT airconv) | Apache-2.0 with LLVM exceptions | https://github.com/llvm/llvm-project/tree/llvmorg-15.0.7 |
 | FreeType 2.13.3 | FreeType License | https://gitlab.freedesktop.org/freetype/freetype/-/tree/VER-2-13-3 |
-| GnuTLS 3.8.7 | LGPL-2.1-or-later, with its bundled LGPL libtasn1/unistring/gnulib sources | https://www.gnutls.org/download.html |
+| GnuTLS 3.8.13 | LGPL-2.1-or-later, with its bundled LGPL libtasn1/unistring/gnulib sources | https://www.gnutls.org/download.html |
 | Nettle / Hogweed 3.10.1 | LGPL-3.0-or-later or GPL-2.0-or-later | https://www.lysator.liu.se/~nisse/nettle/ |
 | GMP 6.3.0 | LGPL-3.0-or-later or GPL-2.0-or-later | https://gmplib.org/download/gmp/ |
 | Brotli 1.1.0 | MIT | https://github.com/google/brotli/tree/v1.1.0 |
