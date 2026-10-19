@@ -23,6 +23,7 @@ import Testing
         (URLError(.cancelled), 1),
         (URLError(.serverCertificateUntrusted), 1),
         (CocoaError(.fileWriteOutOfSpace), 1),
+        (WindowsGraphics.Failure.changedDistribution, 1),
         (CancellationError(), 1),
     ] {
         var attempts = 0

@@ -136,9 +136,11 @@ public enum WindowsTitle: String, CaseIterable, Sendable {
         if self == .overwatch {
             env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree,mshtml=d;d3d11,dxgi,d3d10core,winemetal=b;d3d12,d3d12core,nvapi64,nvngx=d"
         }
-        if backend == .d3dMetal, let graphics {
-            env["WINEDLLPATH"] = graphics.appendingPathComponent("wine").path + ":" + wineRoot.appendingPathComponent("lib/wine").path
-            env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = graphics.appendingPathComponent("external/libd3dshared.dylib").path
+        if backend == .d3dMetal, graphics != nil {
+            // The complete overlay resolves its own DLLs. WINEDLLPATH also
+            // enables Wine's temporary renamed-loader link on macOS, which
+            // would move the process outside our immutable engine directory.
+            env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = wineRoot.appendingPathComponent("lib/external/libd3dshared.dylib").path
             env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree,mshtml=d;dxgi,d3d11,d3d12,atidxx64=n,b;nvapi64,nvngx=d"
             env["D3DM_ENABLE_METALFX"] = "0"
         }

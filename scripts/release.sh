@@ -25,6 +25,8 @@ cd "${0:A:h}/.."
 step() { print -P "%F{cyan}==>%f $*" }
 fail() { print -P "%F{red}error:%f $*" >&2; exit 1 }
 
+[[ "${WINDOWS_EXPERIMENTAL:-0}" != "1" ]] || fail "experimental Windows profiles cannot use the public release pipeline"
+
 version="${1:-}"
 publish=0
 mode="${2:-}"
@@ -50,6 +52,7 @@ if [[ -f scripts/release.env ]]; then
     source scripts/release.env
     set +a
 fi
+[[ "${WINDOWS_EXPERIMENTAL:-0}" != "1" ]] || fail "experimental Windows profiles cannot use the public release pipeline"
 sparkle_bin=".build/artifacts/sparkle/Sparkle/bin"
 profile="${NOTARY_KEYCHAIN_PROFILE:-${NOTARY_PROFILE:-keys-cli-notary}}"
 # Separate from build/Waypoint.app, which may be running.
@@ -100,6 +103,8 @@ xcrun swift test
 
 step "Building Waypoint $version"
 APP_PATH="$app" VERSION="$version" SIGN_IDENTITY="$identity" scripts/bundle.sh
+[[ ! -e "$app/Contents/Resources/WindowsBridge" && ! -e "$app/Contents/Resources/WindowsGraphics" ]] \
+    || fail "experimental Windows resources found in a public release"
 codesign --verify --deep --strict "$app"
 python3 scripts/validate-windows-publication.py "$component" --app "$app"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print SUFeedURL' "$app/Contents/Info.plist")" == "$feed_url" ]] \

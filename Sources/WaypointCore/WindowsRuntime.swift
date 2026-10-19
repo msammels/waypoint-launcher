@@ -238,18 +238,25 @@ public actor WindowsGameSession {
         } else {
             resources = target.resources
         }
-        runtime = try await WindowsRuntimeDownload.prepare(from: resources, cacheRoot: supportRoot.appendingPathComponent("Runtimes"), progress: progress)
+        let preparedRuntime = try await WindowsRuntimeDownload.prepare(from: resources, cacheRoot: supportRoot.appendingPathComponent("Runtimes"), progress: progress)
+        let preparedHelper: URL?
         if title != .heroes {
             guard let bridge = target.bridgeResources ?? WindowsRuntime.bridgeResources else { throw WindowsRuntime.Failure.unavailable }
-            titleHelper = try WindowsBridge.install(from: bridge, cache: supportRoot.appendingPathComponent("Bridges"))
-        }
+            preparedHelper = try WindowsBridge.install(from: bridge, cache: supportRoot.appendingPathComponent("Bridges"))
+        } else { preparedHelper = nil }
+        let preparedGraphics: URL?, preparedMetalWine: URL?
         if title.backend == .d3dMetal {
             guard let graphicsResources = target.graphicsResources ?? WindowsGraphics.resources else { throw WindowsRuntime.Failure.unavailable }
-            graphics = try await WindowsGraphics.prepare(from: graphicsResources,
+            let component = try await WindowsGraphics.prepare(from: graphicsResources,
                 cache: supportRoot.appendingPathComponent("Graphics"), progress: progress)
-            metalWineRoot = try WindowsGraphics.wineOverlay(baseRuntime: runtime!, graphics: graphics!, resources: graphicsResources,
+            preparedGraphics = component
+            preparedMetalWine = try WindowsGraphics.wineOverlay(baseRuntime: preparedRuntime, graphics: component, resources: graphicsResources,
                 cacheRoot: supportRoot.appendingPathComponent("Runtimes"))
-        }
+        } else { preparedGraphics = nil; preparedMetalWine = nil }
+        // A cancelled component download must not let rollback initialize an
+        // empty prefix with the base engine or bypass its display defaults.
+        runtime = preparedRuntime; titleHelper = preparedHelper
+        graphics = preparedGraphics; metalWineRoot = preparedMetalWine
         let ready = prefix.appendingPathComponent(".waypoint-ready-v1")
         let runtimeID = runtime!.lastPathComponent
         let previousRuntime = (try? String(contentsOf: ready, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -345,6 +352,8 @@ public actor WindowsGameSession {
         if let graphicsIdentity { try Data(graphicsIdentity.utf8).write(to: graphicsReady, options: .atomic) }
         try Data((runtimeID + "\n").utf8).write(to: ready, options: .atomic)
         let parent = runtime!.deletingLastPathComponent()
+        if let metalWineRoot { WindowsGraphics.pruneEngines(in: parent, keeping: metalWineRoot) }
+        if let graphics { WindowsGraphics.pruneComponents(in: supportRoot.appendingPathComponent("Graphics"), keeping: graphics) }
         let activePaths = RunningProcesses.executables().map { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path }
         for candidate in (try? fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? [] {
             guard candidate.lastPathComponent != runtimeID,
@@ -442,7 +451,8 @@ public actor WindowsGameSession {
             let server = runtime.appendingPathComponent("bin/wineserver")
             try? await ChildCommand.run(executable: server, arguments: ["-k"], directory: prefix, environment: environment)
             try? await ChildCommand.run(executable: server, arguments: ["-w"], directory: prefix, environment: environment, timeout: 15)
-            if let helper, WineProcesses.gameAndLaunchers(in: root, title: title, runtime: runtime).isEmpty {
+            if let helper, FileManager.default.fileExists(atPath: prefix.appendingPathComponent("system.reg").path),
+               WineProcesses.gameAndLaunchers(in: root, title: title, runtime: runtime).isEmpty {
                 try? await WindowsLaunchOptions.clear(wine: wine, helper: helper, prefix: prefix, environment: environment, title: title)
             }
         }.value

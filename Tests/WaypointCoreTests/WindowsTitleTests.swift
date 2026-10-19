@@ -86,9 +86,15 @@ private func windowsFixture(_ title: WindowsTitle) throws -> Data {
     let metal = URL(fileURLWithPath: "/private/test/apple-graphics")
     let d4 = WindowsTitle.diabloIV.environment(prefix: prefix, wineRoot: wine, display: display, graphics: metal)
     #expect(d4["DXMT_CONFIG"] == nil)
-    #expect(d4["CX_APPLEGPTK_LIBD3DSHARED_PATH"] == metal.appendingPathComponent("external/libd3dshared.dylib").path)
+    #expect(d4["CX_APPLEGPTK_LIBD3DSHARED_PATH"] == wine.appendingPathComponent("lib/external/libd3dshared.dylib").path)
+    #expect(d4["WINEDLLPATH"] == nil)
     #expect(d4["WINEDLLOVERRIDES"]?.contains("dxgi,d3d11,d3d12,atidxx64=n,b") == true)
     #expect(d4["ROSETTA_ADVERTISE_AVX"] == "1")
+    for title in WindowsTitle.allCases {
+        let environment = title.environment(prefix: prefix, wineRoot: wine, display: display, graphics: metal)
+        #expect(environment["WINEDLLPATH"] == nil)
+        #expect(environment["WINELOADER"] == nil)
+    }
 }
 
 @Test func windowsSessionLeaseSurvivesAcrossTitlesAndReleasesAfterFailedPreparation() async throws {

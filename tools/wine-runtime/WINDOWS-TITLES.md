@@ -69,6 +69,17 @@ This immutable copy is keyed to both component manifests. Shared HotS/DXMT
 files remain intact. Damaged copies are repaired atomically. The original
 Apple framework and its signature remain intact in the overlay.
 
+The overlay also makes `WINEDLLPATH` unnecessary. This variable enables Wine's
+renamed temporary loader links on macOS, placing the actual executable outside
+the runtime cache. Leave it unset so lifecycle checks can identify the owned
+engine by its loader path. The CX graphics path and Unix DLL links both resolve
+to the same `lib/external/libd3dshared.dylib` inside the overlay.
+
+Interrupted component acquisition cannot boot an empty prefix with the base
+engine: the session commits its prepared component paths together. Experimental
+bundles default to a separate identifier and no update feed, including signed
+builds. The public release pipeline rejects experimental profiles and resources.
+
 ## Qualification evidence
 
 On 2026-10-19 the production preparation path downloaded and verified the
@@ -76,6 +87,12 @@ component, prepared an isolated Diablo prefix and created a D3D12 feature-level
 12.0 device through the private Metal engine. Reusing the verified cache also
 succeeded. This is an infrastructure smoke test, not evidence of Diablo login,
 license ownership, gameplay, performance or anti-cheat compatibility.
+
+A held-device probe also confirmed the Apple framework and Unix library mapped
+from the overlay. With `WINEDLLPATH` unset, a synthetic game-shaped probe was
+visible to both the per-game and global owned-process guards. Source and fixes
+were reviewed repeatedly with Claude Opus 5.5 at xhigh effort; default and
+experimental tests, real DPAPI hand-offs and the device probe passed.
 
 Unit tests cover public product profiles, platform separation, HotS environment
 preservation, cross-title launch leases, bridge cache repair, graphics integrity,

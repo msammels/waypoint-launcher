@@ -26,11 +26,19 @@ latest_tag="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
 version="${VERSION:-${${latest_tag#v}:-0.1.0}}"
 build_number="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 identity="${SIGN_IDENTITY:--}"
-bundle_id="${BUNDLE_ID:-dev.waypoint.launcher}"
-if [[ -z "${SPARKLE_FEED+set}" && "$identity" != "-" ]]; then
+if [[ "${WINDOWS_EXPERIMENTAL:-0}" == "1" ]]; then
+    bundle_id="${BUNDLE_ID:-dev.waypoint.windows-preview}"
+else
+    bundle_id="${BUNDLE_ID:-dev.waypoint.launcher}"
+fi
+if [[ -z "${SPARKLE_FEED+set}" && "$identity" != "-" && "${WINDOWS_EXPERIMENTAL:-0}" != "1" ]]; then
     feed="https://storage.yandexcloud.net/macos-releases/waypoint/appcast.xml"
 else
     feed="${SPARKLE_FEED:-}"
+fi
+if [[ "${WINDOWS_EXPERIMENTAL:-0}" == "1" && "$feed" == "https://storage.yandexcloud.net/macos-releases/waypoint/appcast.xml" ]]; then
+    print -u2 "Experimental builds cannot use the production Sparkle feed"
+    exit 1
 fi
 # Public half of the EdDSA key that signs updates; the private half lives in
 # the release machine's keychain (generate_keys --account waypoint).

@@ -41,10 +41,11 @@ public enum WindowsGraphics {
                   bytes == 87_477_092,
                   sha256 == "34273bcce885ce5a7fd6937af9ea344bb9961de7d55d6193f7413142e835c8c3",
                   archivePrefix == "Template-1.0.15.app/Contents/Frameworks/renderer/d3dmetal",
-                  files["external/libd3dshared.dylib"] != nil,
-                  files["external/D3DMetal.framework/Versions/A/D3DMetal"] != nil,
-                  files["wine/x86_64-windows/d3d12.dll"] != nil,
-                  files["License.rtf"] != nil,
+                  ["external/libd3dshared.dylib", "external/D3DMetal.framework/Versions/A/D3DMetal", "License.rtf"].allSatisfy({ files[$0] != nil }),
+                  ["dxgi", "d3d11", "d3d12", "atidxx64"].allSatisfy({
+                      files["wine/x86_64-windows/\($0).dll"] != nil &&
+                      symlinks["wine/x86_64-unix/\($0).so"] == "../../external/libd3dshared.dylib"
+                  }),
                   Set(files.keys).isDisjoint(with: symlinks.keys),
                   files.values.allSatisfy({ $0.range(of: "^[a-f0-9]{64}$", options: .regularExpression) != nil })
             else { throw WindowsRuntime.Failure.invalidRuntime }
@@ -80,10 +81,19 @@ public enum WindowsGraphics {
         try Task.checkCancellation()
         progress(UpdateProgress(completedBytes: 0, totalBytes: UInt64(manifest.bytes), completedFiles: 0, totalFiles: 1))
         let archive = try await NetworkRetry().run { _ in
-            let (file, response) = try await DownloadTransfer(limiter: .shared, maximumBytes: manifest.bytes) { done, _ in
-                progress(UpdateProgress(completedBytes: UInt64(max(0, min(manifest.bytes, done))),
-                    totalBytes: UInt64(manifest.bytes), completedFiles: 0, totalFiles: 1))
-            }.download(session: session, request: URLRequest(url: manifest.url))
+            let file: URL, response: URLResponse
+            do {
+                (file, response) = try await DownloadTransfer(limiter: .shared, maximumBytes: manifest.bytes) { done, _ in
+                    progress(UpdateProgress(completedBytes: UInt64(max(0, min(manifest.bytes, done))),
+                        totalBytes: UInt64(manifest.bytes), completedFiles: 0, totalFiles: 1))
+                }.download(session: session, request: URLRequest(url: manifest.url))
+            } catch {
+                let ns = error as NSError
+                if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorDataLengthExceedsMaximum {
+                    throw Failure.changedDistribution
+                }
+                throw error
+            }
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 try? fm.removeItem(at: file)
                 throw HTTPFailure(status: (response as? HTTPURLResponse)?.statusCode ?? 0, url: manifest.url)
@@ -116,7 +126,7 @@ public enum WindowsGraphics {
             directory: staging, environment: ["PATH": "/usr/bin:/bin"], timeout: 30)
         try Task.checkCancellation()
         let retired = parent.appendingPathComponent(".retired-" + UUID().uuidString)
-        if fm.fileExists(atPath: destination.path) { try fm.moveItem(at: destination, to: retired) }
+        if (try? fm.attributesOfItem(atPath: destination.path)) != nil { try fm.moveItem(at: destination, to: retired) }
         do { try fm.moveItem(at: root, to: destination) }
         catch {
             if fm.fileExists(atPath: retired.path) { try? fm.moveItem(at: retired, to: destination) }
@@ -190,9 +200,14 @@ public enum WindowsGraphics {
         }
         let fm = FileManager.default
         let engine = destination.appendingPathComponent("wine")
-        if fm.isExecutableFile(atPath: engine.appendingPathComponent("bin/wine").path),
+        if (try? fm.attributesOfItem(atPath: destination.path)[.type] as? FileAttributeType) == .typeDirectory,
+           fm.isExecutableFile(atPath: engine.appendingPathComponent("bin/wine").path),
            fm.isExecutableFile(atPath: engine.appendingPathComponent("bin/wineserver").path),
-           (try? verifyFiles(files, symlinks: links, at: engine)) != nil { return engine }
+           (try? verifyFiles(files, symlinks: links, at: engine)) != nil {
+            var excluded = URLResourceValues(); excluded.isExcludedFromBackup = true
+            var installed = destination; try installed.setResourceValues(excluded)
+            return engine
+        }
         let staging = cacheRoot.appendingPathComponent(".metal-wine-" + UUID().uuidString)
         defer { try? fm.removeItem(at: staging) }
         let stagedWine = staging.appendingPathComponent("wine")
@@ -214,13 +229,42 @@ public enum WindowsGraphics {
         }
         try verifyFiles(files, symlinks: links, at: stagedWine)
         let retired = cacheRoot.appendingPathComponent(".retired-" + UUID().uuidString)
-        if fm.fileExists(atPath: destination.path) { try fm.moveItem(at: destination, to: retired) }
+        if (try? fm.attributesOfItem(atPath: destination.path)) != nil { try fm.moveItem(at: destination, to: retired) }
         do { try fm.moveItem(at: staging, to: destination) }
         catch {
             if fm.fileExists(atPath: retired.path) { try? fm.moveItem(at: retired, to: destination) }
             throw error
         }
         try? fm.removeItem(at: retired)
+        var excluded = URLResourceValues(); excluded.isExcludedFromBackup = true
+        var installed = destination; try installed.setResourceValues(excluded)
         return engine
+    }
+
+    /// Called under the global Windows lease after the current engine is
+    /// prepared. Never remove another process's loader or follow a cache link.
+    static func pruneEngines(in cache: URL, keeping engine: URL) {
+        let fm = FileManager.default
+        let current = engine.deletingLastPathComponent().lastPathComponent
+        let active = RunningProcesses.executables().map { URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path }
+        for item in (try? fm.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? [] {
+            guard item.lastPathComponent != current,
+                  item.lastPathComponent.range(of: "^(d3dmetal-[a-f0-9]{64}|\\.metal-wine-[A-Fa-f0-9-]{36})$", options: .regularExpression) != nil,
+                  !active.contains(where: { $0.hasPrefix(item.resolvingSymlinksInPath().path + "/") }) else { continue }
+            try? fm.removeItem(at: item)
+        }
+    }
+
+    /// Metal games use only the complete overlay after preparation. The
+    /// caller holds the global lease and has excluded every owned live game.
+    static func pruneComponents(in cache: URL, keeping component: URL) {
+        let fm = FileManager.default
+        guard let lease = try? PrefixLease(file: cache.appendingPathComponent("prepare.lock")) else { return }
+        defer { lease.release() }
+        for item in (try? fm.contentsOfDirectory(at: cache, includingPropertiesForKeys: nil)) ?? [] {
+            guard item.lastPathComponent != component.lastPathComponent,
+                  item.lastPathComponent.range(of: "^d3dmetal-[a-f0-9]{64}$", options: .regularExpression) != nil else { continue }
+            try? fm.removeItem(at: item)
+        }
     }
 }
