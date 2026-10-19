@@ -30,7 +30,7 @@ public enum WindowsTitle: String, CaseIterable, Sendable {
         }
     }
     public var folderName: String { self == .diabloII ? "Diablo II Resurrected" : displayName }
-    public var backend: Backend { self == .heroes || self == .overwatch ? .dxmt : .d3dMetal }
+    public var backend: Backend { self == .heroes ? .dxmt : .d3dMetal }
     public var executablePath: String {
         switch self {
         case .heroes: "Support64/HeroesSwitcher_x64.exe"
@@ -143,7 +143,13 @@ public enum WindowsTitle: String, CaseIterable, Sendable {
             // enables Wine's temporary renamed-loader link on macOS, which
             // would move the process outside our immutable engine directory.
             env["CX_APPLEGPTK_LIBD3DSHARED_PATH"] = wineRoot.appendingPathComponent("lib/external/libd3dshared.dylib").path
-            env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree,mshtml=d;dxgi,d3d11,d3d12,atidxx64=n,b;nvapi64,nvngx=d"
+            if self == .overwatch {
+                // The same-prefix launch control reaches SMS Protect with
+                // Metal DX11; DXMT stalls before creating its first window.
+                env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree,mshtml=d;dxgi,d3d11,atidxx64=n,b;d3d12,d3d12core,nvapi64,nvngx=d"
+            } else {
+                env["WINEDLLOVERRIDES"] = "winemenubuilder.exe=d;mscoree,mshtml=d;dxgi,d3d11,d3d12,atidxx64=n,b;nvapi64,nvngx=d"
+            }
             env["D3DM_ENABLE_METALFX"] = "0"
         }
         return env

@@ -1,8 +1,8 @@
 import Foundation
 import CryptoKit
 
-/// An optional graphics component. HotS and Overwatch continue to use the
-/// existing DXMT runtime; Diablo downloads the pinned, unmodified Apple stack.
+/// An optional graphics component. HotS uses the existing DXMT runtime;
+/// the other Windows profiles download the pinned, unmodified Apple stack.
 public enum WindowsGraphics {
     enum Failure: Error, LocalizedError {
         case changedDistribution
