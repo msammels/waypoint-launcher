@@ -88,7 +88,8 @@ final class GameCell: NSView {
         edition.item(at: 0)?.title = WindowsHeroes.isAvailable ? "Windows (recommended)" : "Windows"
         edition.item(at: 0)?.isEnabled = WindowsHeroes.isAvailable
         edition.selectItem(at: game.install.platform == .windows ? 0 : 1)
-        edition.isEnabled = !state.isRunning && !model.isSigningIn && state.phase != .launching
+        let isUninstalling = if case .uninstalling = state.phase { true } else { false }
+        edition.isEnabled = !state.isRunning && !model.isSigningIn && state.phase != .launching && !isUninstalling
         toolTip = game.install.version.map { "Version \($0)" }
 
         progress.isHidden = true
@@ -112,6 +113,8 @@ final class GameCell: NSView {
             progress.isHidden = false
             let pausing = if case .pausing = state.phase { true } else { false }
             detail.stringValue = downloadStatus(update, label: pausing ? "Pausing…" : "Paused")
+        case .uninstalling(let step):
+            detail.stringValue = step
         case .failed(let message):
             detail.stringValue = message
             detail.toolTip = message
@@ -130,8 +133,9 @@ final class GameCell: NSView {
         spinner.stopAnimation(nil)
         button.isHidden = true
         cancelButton.isHidden = !model.canCancelDownload(uid: game.id)
+        // Its own progress shows rather than Running or Unsupported.
         let hasDownloadControls: Bool = switch state.phase {
-        case .updating, .pausing, .paused: true
+        case .updating, .pausing, .paused, .uninstalling: true
         default: false
         }
         if state.isRunning, case .launching = state.phase, !hasDownloadControls {
@@ -162,6 +166,8 @@ final class GameCell: NSView {
                 button.title = "Resume"
                 button.isEnabled = model.canResumeDownload(uid: game.id)
                 button.isHidden = false
+            case .uninstalling(let step):
+                showSpinner(step)
             case .idle, .failed:
                 let updates = state.update != nil && GameUpdate.canUpdate(game.install)
                 let retry = model.canResumeDownload(uid: game.id)
@@ -219,36 +225,52 @@ final class GameCell: NSView {
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard let state, let model, state.game.isSupported, !state.isRunning else { return nil }
+        guard let state, let model, !state.isRunning else { return nil }
         switch state.phase {
         case .idle, .failed: break
         default: return nil
         }
         let game = state.game
         let menu = NSMenu()
-        if model.availableUpdate(for: game) != nil {
-            menu.addItem(ActionItem("Play Without Updating") { Task { await model.play(game) } })
-        }
-        let others = model.accounts.filter { $0.id != model.activeAccount?.id }
-        if !others.isEmpty {
-            let playAs = NSMenuItem(title: "Play As", action: nil, keyEquivalent: "")
-            playAs.submenu = NSMenu()
-            for account in others {
-                let item = ActionItem(account.displayName) { Task { await model.play(game, as: account.id) } }
-                item.image = .account(account)
-                playAs.submenu?.addItem(item)
+        menu.autoenablesItems = false
+        if game.isSupported {
+            if model.availableUpdate(for: game) != nil {
+                menu.addItem(ActionItem("Play Without Updating") { Task { await model.play(game) } })
             }
-            menu.addItem(playAs)
+            let others = model.accounts.filter { $0.id != model.activeAccount?.id }
+            if !others.isEmpty {
+                let playAs = NSMenuItem(title: "Play As", action: nil, keyEquivalent: "")
+                playAs.submenu = NSMenu()
+                for account in others {
+                    let item = ActionItem(account.displayName) { Task { await model.play(game, as: account.id) } }
+                    item.image = .account(account)
+                    playAs.submenu?.addItem(item)
+                }
+                menu.addItem(playAs)
+            }
+            menu.addItem(ActionItem("Sign In Again and Play") { Task { await model.play(game, forceSignIn: true) } })
+            if GameUpdate.canUpdate(game.install) {
+                menu.addItem(.separator())
+                menu.addItem(ActionItem("Change Language…") { [weak self] in
+                    self?.window?.contentViewController?.presentAsSheet(LanguageSheet(game: game, model: model))
+                })
+                menu.addItem(ActionItem("Verify Files") { Task { await model.update(game, verify: true) } })
+            }
         }
-        menu.addItem(ActionItem("Sign In Again and Play") { Task { await model.play(game, forceSignIn: true) } })
-        if GameUpdate.canUpdate(game.install) {
-            menu.addItem(.separator())
-            menu.addItem(ActionItem("Change Language…") { [weak self] in
-                self?.window?.contentViewController?.presentAsSheet(LanguageSheet(game: game, model: model))
-            })
-            menu.addItem(ActionItem("Verify Files") { Task { await model.update(game, verify: true) } })
+        // Unsupported games too: removing one is the one thing left to do with it.
+        if game.isInstalled {
+            if !menu.items.isEmpty { menu.addItem(.separator()) }
+            let uninstall = ActionItem("Uninstall…", enabled: model.canUninstall(game)) { [weak self] in
+                guard let window = self?.window else { return }
+                UninstallAlert.present(game, model: model, in: window)
+            }
+            if !uninstall.isEnabled {
+                let folder = URL(fileURLWithPath: game.install.installPath).lastPathComponent
+                uninstall.toolTip = "Another game in “\(folder)” is running or has a download in progress."
+            }
+            menu.addItem(uninstall)
         }
-        return menu
+        return menu.items.isEmpty ? nil : menu
     }
 
     /// "36.6.3 · EU", plus "Intel" for games that need Rosetta. The full

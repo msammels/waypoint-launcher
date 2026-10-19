@@ -14,6 +14,8 @@ final class AppModel {
         case updating(UpdateProgress?)
         case pausing(UpdateProgress?)
         case paused(UpdateProgress?)
+        /// Moving to the Trash, then freeing shared storage: what it's doing.
+        case uninstalling(String)
         case failed(String)
 
         static func == (a: Phase, b: Phase) -> Bool {
@@ -21,6 +23,7 @@ final class AppModel {
             case (.idle, .idle), (.signingIn, .signingIn), (.launching, .launching),
                  (.updating, .updating), (.pausing, .pausing), (.paused, .paused): true
             case (.preparingWindows(let x), .preparingWindows(let y)): x == y
+            case (.uninstalling(let x), .uninstalling(let y)): x == y
             case (.failed(let x), .failed(let y)): x == y
             default: false
             }
@@ -37,6 +40,15 @@ final class AppModel {
     private(set) var phases: [String: Phase] = [:]
     /// Each job owns its task and retains the original install/update options.
     private var downloads: [String: DownloadJob] = [:]
+    /// Job uid -> the install folder it writes to.
+    @ObservationIgnored private var jobFolders: [String: String] = [:]
+    /// Install folders a game is being uninstalled from: nothing else may
+    /// touch them meanwhile (WoW versions share one).
+    private var uninstallingFolders: Set<String> = []
+    /// Folders whose shared storage is being cleaned after an uninstall. The
+    /// other versions there can play meanwhile (the cleaner then leaves the
+    /// storage alone), but nothing may write to it or be uninstalled.
+    private var cleaningFolders: Set<String> = []
     private(set) var running: Set<String> = []
     /// Game uid -> result of the last update check.
     private(set) var updates: [String: UpdateCheck] = [:]
@@ -106,11 +118,18 @@ final class AppModel {
     }
 
     func reload() {
-        discoveredGames = library.games()
+        // Battle.net's records outlive a game whose files are gone (moved to
+        // the Trash, or uninstalled here): only what's on disk is listed.
+        let found = library.games()
+        discoveredGames = found.filter(\.isInstalled)
         var all = discoveredGames
         if let pendingHeroesInstall {
             all.removeAll { $0.id == pendingHeroesInstall.key }
             all.append(GameCatalog.game(for: pendingHeroesInstall))
+        }
+        // A game being uninstalled keeps its row until that's done.
+        for game in games where !all.contains(where: { $0.id == game.id }) {
+            if case .uninstalling = phases[game.id] { all.append(game) }
         }
         let heroes = all.filter { $0.install.uid == "heroes" }
         let preferred = WindowsHeroes.isAvailable ? heroesPlatform : .macOS
@@ -123,7 +142,8 @@ final class AppModel {
             return true
         }
         refreshRunning()
-        Log.info(.library, "scanned", nil, ["games": games.map { "\($0.install.uid)@\($0.install.version ?? "?")" }.joined(separator: ",")])
+        Log.info(.library, "scanned", nil, ["games": games.map { "\($0.install.uid)@\($0.install.version ?? "?")" }.joined(separator: ","),
+                                            "missing": found.filter { !$0.isInstalled }.map(\.id).joined(separator: ",")])
     }
 
     func heroesEdition(_ platform: InstallPlatform) -> Game? {
@@ -156,7 +176,8 @@ final class AppModel {
     }
 
     func canUpdate(_ game: Game) -> Bool {
-        GameUpdate.canUpdate(game.install) && game.isInstalled && !isRunning(game) && !isBusy(game)
+        GameUpdate.canUpdate(game.install) && game.isInstalled && !isRunning(game) && !isBusy(game) &&
+            !cleaningFolders.contains(Self.folderKey(game.install.installPath))
     }
 
     /// Asks Blizzard's version service which build is live. Cheap (one small
@@ -195,6 +216,7 @@ final class AppModel {
         }
         phases.removeValue(forKey: game.id)
         downloads[game.id] = job
+        jobFolders[game.id] = Self.folderKey(game.install.installPath)
         await runDownload(job, uid: game.id)
     }
 
@@ -231,6 +253,7 @@ final class AppModel {
         }
         phases.removeValue(forKey: game.id)
         downloads[game.id] = job
+        jobFolders[game.id] = Self.folderKey(game.install.installPath)
         await runDownload(job, uid: game.id)
     }
 
@@ -269,7 +292,8 @@ final class AppModel {
         let platform = requestedPlatform ?? defaultPlatform(for: product)
         defer { ProcessMemory.releaseFreed() }
         let uid = platform.installKey(uid: product.uid)
-        guard !isBusy(uid: uid) else { return }
+        let folderKey = Self.folderKey(folder.path)
+        guard !isBusy(uid: uid), !uninstallingFolders.contains(folderKey), !cleaningFolders.contains(folderKey) else { return }
         guard platform != .windows || acceptGraphicsLicense(for: WindowsTitle(rawValue: product.productCode)) else { return }
         if product.productCode == "hero" {
             guard !isBusy(uid: "heroes"), !isBusy(uid: "heroes@windows") else { return }
@@ -288,6 +312,7 @@ final class AppModel {
         }
         phases.removeValue(forKey: uid)
         downloads[uid] = job
+        jobFolders[uid] = Self.folderKey(folder.path)
         await runDownload(job, uid: uid)
     }
 
@@ -300,11 +325,11 @@ final class AppModel {
         }
     }
 
-    func canPauseDownload(uid: String) -> Bool { downloads[uid]?.canPause == true }
+    func canPauseDownload(uid: String) -> Bool { downloads[uid]?.canPause == true && !isUninstalling(uid: uid) }
 
     func pauseDownload(uid: String) { downloads[uid]?.pause() }
 
-    func canCancelDownload(uid: String) -> Bool { downloads[uid]?.canCancel == true }
+    func canCancelDownload(uid: String) -> Bool { downloads[uid]?.canCancel == true && !isUninstalling(uid: uid) }
 
     /// Stop tracking a paused job. Its verified data stays available for a
     /// later install/update; no writer is active when canCancel is true.
@@ -317,7 +342,7 @@ final class AppModel {
     }
 
     func canResumeDownload(uid: String) -> Bool {
-        downloads[uid]?.canResume == true && !running.contains(uid)
+        downloads[uid]?.canResume == true && !running.contains(uid) && !isUninstalling(uid: uid)
     }
 
     func resumeDownload(uid: String) async {
@@ -327,7 +352,92 @@ final class AppModel {
         await runDownload(job, uid: uid)
     }
 
+    // MARK: Uninstalling
+
+    /// Whether `game` can be uninstalled now: it's on disk, and nothing in
+    /// its folder is running, busy or has a download to resume (a paused
+    /// WoW install keeps its data in the shared storage).
+    func canUninstall(_ game: Game) -> Bool {
+        let folder = Self.folderKey(game.install.installPath)
+        let neighbours = discoveredGames.filter { Self.folderKey($0.install.installPath) == folder }
+        return game.isInstalled && !isBusy(game) && !isRunning(game) && !cleaningFolders.contains(folder) &&
+            !neighbours.contains { isRunning($0) || isBusy(uid: $0.id) } &&
+            !downloads.keys.contains { $0 != game.id && jobFolders[$0] == folder }
+    }
+
+    private func isUninstalling(uid: String) -> Bool {
+        if case .uninstalling = phases[uid] { true } else { false }
+    }
+
+    /// What uninstalling `game` takes away, for the confirmation, and how.
+    func uninstaller(for game: Game, keepingUserFiles: Bool) -> GameUninstaller {
+        GameUninstaller(install: game.install, displayName: game.displayName, keepsUserFiles: keepingUserFiles,
+                        otherInstalls: discoveredGames.filter { $0.id != game.id }.map(\.install))
+    }
+
+    /// Moves `game` to the Trash and forgets it; with `keepingUserFiles`, a
+    /// WoW version's add-ons, settings and screenshots stay. A WoW version
+    /// that shared its folder then frees what only it used in the shared
+    /// storage.
+    func uninstall(_ game: Game, keepingUserFiles: Bool) async {
+        guard canUninstall(game) else { return }
+        let folder = Self.folderKey(game.install.installPath)
+        uninstallingFolders.insert(folder)
+        // Shows over a failed download's state (and keeps it from resuming)
+        // until the job goes with the game.
+        phases[game.id] = .uninstalling("Moving to the Trash…")
+        Log.notice(.install, "uninstall_requested", nil, ["uid": game.id, "path": folder, "keep_user_files": keepingUserFiles])
+        let uninstaller = uninstaller(for: game, keepingUserFiles: keepingUserFiles)
+        let plan: UninstallPlan
+        do {
+            plan = try await uninstaller.remove()
+        } catch {
+            uninstallingFolders.remove(folder)
+            Log.error(.install, "uninstall_failed", nil, ["uid": game.id, "error": error])
+            phases[game.id] = .failed(errorMessage(error))
+            reload()
+            let gone = !games.contains(where: { $0.id == game.id })
+            if gone || downloads[game.id] != nil {
+                // No row can say it: the game is gone all the same (putting it
+                // back failed), or its row shows a failed download's message.
+                phases.removeValue(forKey: game.id)
+                if gone { downloads.removeValue(forKey: game.id) }
+                NSAlert(error: error).runModal()
+            }
+            return
+        }
+        downloads.removeValue(forKey: game.id)
+        uninstallingFolders.remove(folder)
+        var cleanupError: Error?
+        if plan.sharesStorage {
+            // Network fetches can make this take minutes: the other versions
+            // stay playable (not updatable), and only this row waits.
+            cleaningFolders.insert(folder)
+            phases[game.id] = .uninstalling("Freeing up space…")
+            do {
+                let result = try await uninstaller.cleanSharedStorage()
+                Log.notice(.install, "uninstall_storage_cleaned", nil, ["uid": game.id, "reclaimed_bytes": result.reclaimedBytes])
+            } catch {
+                Log.warning(.install, "uninstall_storage_kept", nil, ["uid": game.id, "error": error])
+                cleanupError = error
+            }
+            cleaningFolders.remove(folder)
+        }
+        phases.removeValue(forKey: game.id)
+        updates.removeValue(forKey: game.id)
+        reload()
+        if let cleanupError {
+            let alert = NSAlert()
+            alert.messageText = "\(game.displayName) is uninstalled, but the space it used in “\(plan.root.lastPathComponent)” isn’t free yet"
+            alert.informativeText = "It’s freed the next time another game in that folder updates.\n\n\(errorMessage(cleanupError))"
+            alert.runModal()
+        }
+    }
+
+    private static func folderKey(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.path }
+
     private func phase(uid: String) -> Phase {
+        if isUninstalling(uid: uid) { return phases[uid]! }
         guard let job = downloads[uid] else { return phases[uid] ?? .idle }
         switch job.state {
         case .ready, .running: return .updating(job.progress)
@@ -340,14 +450,17 @@ final class AppModel {
 
     private func isBusy(uid: String) -> Bool {
         switch phase(uid: uid) {
-        case .signingIn, .preparingWindows, .launching, .updating, .pausing, .paused: true
+        case .signingIn, .preparingWindows, .launching, .updating, .pausing, .paused, .uninstalling: true
         default: false
         }
     }
 
     func phase(of game: Game) -> Phase { phase(uid: game.id) }
 
-    func isBusy(_ game: Game) -> Bool { isBusy(uid: game.id) }
+    /// Also while another game is uninstalled from its folder.
+    func isBusy(_ game: Game) -> Bool {
+        isBusy(uid: game.id) || uninstallingFolders.contains(Self.folderKey(game.install.installPath))
+    }
 
     /// Only one sign-in at a time: the login window and the hidden web view
     /// each serve a single request.

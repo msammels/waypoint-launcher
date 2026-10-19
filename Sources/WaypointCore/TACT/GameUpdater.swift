@@ -56,6 +56,8 @@ public enum UpdateError: Error, CustomStringConvertible {
     case unsafePath(String)
     /// Another install or update is writing to this local storage.
     case storageBusy(String)
+    /// Another update wrote to the storage while it was being checked for cleaning.
+    case storageChanged
 
     public var description: String {
         switch self {
@@ -69,6 +71,7 @@ public enum UpdateError: Error, CustomStringConvertible {
             "Not enough disk space: need \(ByteCountFormatter.string(fromByteCount: Int64(needed), countStyle: .file)), have \(ByteCountFormatter.string(fromByteCount: Int64(available), countStyle: .file))"
         case .unsafePath(let path): "Refusing to write outside the game folder: \(path)"
         case .storageBusy(let path): "Another install or update is writing to \(path). Try again once it has finished"
+        case .storageChanged: "Another update changed the game data while it was being checked"
         }
     }
 }
@@ -595,7 +598,13 @@ public struct InstallStateStore: Sendable {
         try record(key: install.key, platform: install.platform, build)
     }
 
+    /// Writers load, change and save the files: one at a time, or a download
+    /// finishing during an uninstall could lose the other's change.
+    private static let writeLock = NSLock()
+
     private func record(key uid: String, platform: InstallPlatform, _ build: InstalledBuild) throws {
+        Self.writeLock.lock()
+        defer { Self.writeLock.unlock() }
         var all = load()
         var build = build
         if let old = all[uid], old.chosenLanguages == true {
@@ -609,12 +618,30 @@ public struct InstallStateStore: Sendable {
             }
         }
         all[uid] = build
+        try save(all, platform: platform)
+    }
+
+    /// Forgets an uninstalled game. A record of another copy elsewhere (a
+    /// test install) stays.
+    public func remove(_ install: ProductInstall) throws {
+        Self.writeLock.lock()
+        defer { Self.writeLock.unlock() }
+        var all = load()
+        guard let build = all[install.key], (build.platform ?? .macOS) == install.platform else { return }
+        func standardized(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.path }
+        if let path = build.installPath, standardized(path) != standardized(install.installPath) { return }
+        all[install.key] = nil
+        try save(all, platform: install.platform)
+    }
+
+    /// Writes one platform's file with that platform's records.
+    private func save(_ records: [String: InstalledBuild], platform: InstallPlatform) throws {
         let destination = platform == .windows ? windowsFile : file
-        all = all.filter { ($0.value.platform ?? .macOS) == platform }
+        let records = records.filter { ($0.value.platform ?? .macOS) == platform }
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(all).write(to: destination, options: .atomic)
+        try encoder.encode(records).write(to: destination, options: .atomic)
     }
 
     /// Games Waypoint installed itself, which Battle.net doesn't know about.

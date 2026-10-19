@@ -181,10 +181,19 @@ public struct GameLibrary {
     public func installs() -> [ProductInstall] {
         var byUID: [String: ProductInstall] = [:]
         var order: [String] = []
+        func isOnDisk(_ install: ProductInstall) -> Bool {
+            GameCatalog.game(for: install, fileManager: fileManager).isInstalled
+        }
         func add(_ install: ProductInstall) {
-            if byUID[install.key] == nil { order.append(install.key) }
-            // Later sources only fill gaps; the Agent database is authoritative.
-            byUID[install.key] = byUID[install.key] ?? install
+            guard let earlier = byUID[install.key] else {
+                order.append(install.key)
+                byUID[install.key] = install
+                return
+            }
+            // Later sources only fill gaps; the Agent database is authoritative,
+            // unless its copy's files are gone (uninstalled in Waypoint, or
+            // moved to the Trash) and this one's are there.
+            if !isOnDisk(earlier), isOnDisk(install) { byUID[install.key] = install }
         }
 
         if let installs = try? ProductDB.loadAgentDatabase(at: agentDatabase) {

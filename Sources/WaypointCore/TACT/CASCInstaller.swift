@@ -399,7 +399,8 @@ public struct CASCInstaller: Sendable {
         try BattleNet.ensureNotRunning()
         let storageDir = dataRoot.appendingPathComponent("data", isDirectory: true)
         guard let stored = try StoredKeys.load(storageDir) else { return .init() }
-        let buildInfo = try String(contentsOf: root.appendingPathComponent(".build.info"), encoding: .utf8)
+        let buildInfoURL = root.appendingPathComponent(".build.info")
+        let buildInfo = try String(contentsOf: buildInfoURL, encoding: .utf8)
         let rows = BPSV(buildInfo).rows
         guard !rows.isEmpty else { throw TACTError.malformed(".build.info") }
 
@@ -427,20 +428,31 @@ public struct CASCInstaller: Sendable {
                 log("\(product) build \(buildKey.prefix(8)): checked")
             }
         }
-        var result = try CASCStorageCleaner.clean(storageDir, dryRun: dryRun) { key in
+        // Old CDN indexes stay unless every CDN config loads; the storage is cleaned either way.
+        var referenced: Set<String>?
+        do {
+            referenced = try await referencedIndexes(rows)
+        } catch {
+            if Task.isCancelled || NetworkRetry.isCancellation(error) { throw error }
+            Log.warning(.install, "stale_indexes_kept", nil, ["path": root.path, "error": error])
+        }
+        // Everything above came from the network and can take minutes. A game
+        // or Battle.net started meanwhile keeps the storage as it is, and so
+        // does another update's write (the cleaner checks, under the storage lock).
+        guard RunningProcesses.inside(root).isEmpty else { throw UpdateError.gameRunning }
+        try BattleNet.ensureNotRunning()
+        let isCurrent = { (try? String(contentsOf: buildInfoURL, encoding: .utf8)) == buildInfo }
+        var result = try CASCStorageCleaner.clean(storageDir, dryRun: dryRun, unchangedSince: stored, isCurrent: isCurrent) { key in
             stored.position(of: key).map { live[key.bucket][$0] } ?? false
         }
-        result.removedIndexBytes = try await removeStaleIndexes(rows, dryRun: dryRun)
+        if let referenced, isCurrent() { result.removedIndexBytes = removeStaleIndexes(referenced: referenced, dryRun: dryRun) }
         log("\(dryRun ? "Would remove" : "Removed") \(result.removedFiles) files no installed build uses (\(result.removedBytes) bytes); \(result.reclaimedBytes) bytes of disk given back; \(result.removedIndexBytes) bytes of old CDN indexes")
         return result
     }
 
-    /// CDN indexes in `Data/indices` that none of the installed builds' CDN
-    /// configs names any more (every CDN config change brings new archives
-    /// and a new group index, 130 MB for WoW). Kept unless every config loads.
-    private func removeStaleIndexes(_ rows: [[String: String]], dryRun: Bool) async throws -> UInt64 {
-        let fm = FileManager.default
-        let indexDir = dataRoot.appendingPathComponent("indices", isDirectory: true)
+    /// What the installed builds' CDN configs name: the CDN indexes in
+    /// `Data/indices` they still use. Throws unless every config loads.
+    private func referencedIndexes(_ rows: [[String: String]]) async throws -> Set<String> {
         var referenced = Set<String>()
         for row in rows {
             guard let product = row["Product"], let cdnKey = row["CDN Key"], cdnKey.count == 32 else {
@@ -453,6 +465,15 @@ public struct CASCInstaller: Sendable {
                 referenced.insert(word.lowercased())
             }
         }
+        return referenced
+    }
+
+    /// CDN indexes in `Data/indices` that none of the installed builds' CDN
+    /// configs names any more (every CDN config change brings new archives
+    /// and a new group index, 130 MB for WoW).
+    private func removeStaleIndexes(referenced: Set<String>, dryRun: Bool) -> UInt64 {
+        let fm = FileManager.default
+        let indexDir = dataRoot.appendingPathComponent("indices", isDirectory: true)
         var removed: UInt64 = 0
         for file in (try? fm.contentsOfDirectory(atPath: indexDir.path)) ?? [] {
             guard file.hasSuffix(".index"), file.count == 38, !referenced.contains(String(file.prefix(32)).lowercased()) else { continue }

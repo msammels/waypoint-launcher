@@ -568,6 +568,10 @@ final class StorageLock {
 /// searched by bisection: 16 bytes a key, a fraction of a `Set`'s cost.
 public struct StoredKeys: Sendable {
     var buckets: [[Key9]]
+    /// The storage as it was loaded: index versions and archive sizes
+    /// change with every finished write.
+    var versions: [UInt32] = []
+    var archiveSizes: [UInt64] = []
 
     public var count: Int { buckets.reduce(0) { $0 + $1.count } }
     public func contains(_ key: Key9) -> Bool { buckets[key.bucket].sortedContains(key) }
@@ -596,7 +600,7 @@ public struct StoredKeys: Sendable {
             for key in keys where unique.last != key { unique.append(key) }
             buckets[bucket] = unique
         }
-        return StoredKeys(buckets: buckets)
+        return StoredKeys(buckets: buckets, versions: state.versions, archiveSizes: state.archiveSizes)
     }
 }
 
@@ -742,7 +746,13 @@ public enum CASCStorageCleaner {
 
     /// `isLive` says whether some installed build still needs a key; archive
     /// segment headers always stay. With `dryRun`, only counts.
-    public static func clean(_ directory: URL, dryRun: Bool = false, isLive: (Key9) -> Bool) throws -> Result {
+    ///
+    /// `isLive` is worked out from `snapshot` (and whatever `isCurrent`
+    /// checks, such as `.build.info`), which takes network fetches: if
+    /// another version's update wrote meanwhile, its new files would look
+    /// dead. Nothing is removed then; that update cleans up after itself.
+    public static func clean(_ directory: URL, dryRun: Bool = false, unchangedSince snapshot: StoredKeys? = nil,
+                             isCurrent: () -> Bool = { true }, isLive: (Key9) -> Bool) throws -> Result {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directory.path) else { return Result() }
         let lock = try StorageLock(directory)
@@ -751,6 +761,9 @@ public enum CASCStorageCleaner {
             throw TACTError.unsupported("cleaning a storage with an unfinished install or update")
         }
         guard let state = try CASC.scanStorage(directory) else { return Result() }
+        if let snapshot, snapshot.versions != state.versions || snapshot.archiveSizes != state.archiveSizes || !isCurrent() {
+            throw UpdateError.storageChanged
+        }
         func keeps(_ entry: CASC.IndexEntry) -> Bool {
             let isSegmentHeader = entry.size == UInt32(CASC.headerSize) && entry.offset < UInt64(CASC.segmentHeadersSize)
                 && entry.offset % UInt64(CASC.headerSize) == 0

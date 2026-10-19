@@ -705,3 +705,30 @@ func archiveGroupMatchesAgentBuiltOnes() throws {
     }
     #expect(compared >= 2)
 }
+
+/// The cleaner's idea of what's live comes from a snapshot taken before
+/// minutes of network fetches. Another version's update finishing meanwhile
+/// must not lose the files it just added.
+@Test func cleaningLeavesAStorageThatChangedSinceItsSnapshot() throws {
+    let fm = FileManager.default
+    let dir = fm.temporaryDirectory.appendingPathComponent("waypoint-casc-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: dir) }
+    let writer = try CASCStorageWriter(directory: dir)
+    for i in 0..<4 { try writer.append(encodedKey: storageKey(i), blob: Data(repeating: 1, count: 10_000), fullKey: false) }
+    try writer.finish()
+    let snapshot = try #require(try StoredKeys.load(dir))
+    let live = Set([storageKey(0).prefix(9)])
+    let isLive: (Key9) -> Bool = { live.contains($0.data) }
+
+    let update = try CASCStorageWriter(directory: dir, allowExisting: true)
+    try update.append(encodedKey: storageKey(100), blob: Data(repeating: 2, count: 10_000), fullKey: false)
+    try update.finish()
+    #expect(throws: UpdateError.self) { try CASCStorageCleaner.clean(dir, unchangedSince: snapshot, isLive: isLive) }
+    #expect(try StoredKeys.load(dir)!.contains(Key16(storageKey(100))!), "the update's file stays")
+    #expect(try StoredKeys.load(dir)!.contains(Key16(storageKey(1))!), "nothing is removed")
+
+    // Nor when only .build.info changed (another version recorded a new build).
+    let fresh = try #require(try StoredKeys.load(dir))
+    #expect(throws: UpdateError.self) { try CASCStorageCleaner.clean(dir, unchangedSince: fresh, isCurrent: { false }, isLive: isLive) }
+    #expect(try CASCStorageCleaner.clean(dir, unchangedSince: fresh, isLive: isLive).removedFiles == 4)
+}
