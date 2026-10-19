@@ -9,7 +9,7 @@ installation, Waypoint login and real rendering have been checked.
 | Product | Install uid | Web/registry codename | Graphics | Current minimum |
 | --- | --- | --- | --- | --- |
 | Heroes of the Storm (`hero`) | `heroes` | `Hero` | DXMT 0.80 | macOS 15, Apple silicon, Rosetta |
-| Overwatch (`pro`) | `prometheus` | `Pro` | DX11 through DXMT | macOS 26.5, Apple silicon, Rosetta |
+| Overwatch (`pro`) | `prometheus` | `Pro` | DX11 through D3DMetal 3.0 | macOS 26.5, Apple silicon, Rosetta |
 | Diablo IV (`fenris`) | `fenris` | `Fen` | D3DMetal 3.0 | macOS 26.5, Apple silicon, Rosetta |
 | Diablo II: Resurrected (`osi`) | `osi` | `OSI` | D3DMetal 3.0 | macOS 26.5, Apple silicon, Rosetta |
 
@@ -37,6 +37,11 @@ never target another app's bottle or a global wineserver.
 
 Documents folders stay inside the prefix rather than linking to native game
 settings. The game's own shipped C/C++ DLLs are copied into that prefix.
+If Overwatch has no saved settings, Waypoint seeds borderless fullscreen before
+launch. This also applies to existing prefixes without a settings file. It
+avoids an exclusive-mode Retina desktop switch that left the window at half
+the display dimensions. Existing settings are never replaced, and Waypoint
+does not change the macOS display mode.
 Direct SSO uses the normal native Waypoint account flow and a per-title
 [stdin bridge](../windows-launch-options/README.md). No copied Battle.net
 account databases or credentials from another Wine prefix are needed.
@@ -93,9 +98,23 @@ sign-in succeeded, but the game process stalled before creating a window.
 Direct launches reproduced the stall with MSync disabled, write-copy simulation
 disabled, AVX advertisement disabled and a conventional C: path. A separate
 Recall 1.4 engine with a fresh prefix also reproduced it. The cause remains
-unconfirmed; no rendering or gameplay qualification has passed. Preview launches
+unconfirmed within DXMT. A controlled comparison in the same isolated prefix
+showed D3DMetal DX11 opening a rendered window in about ten seconds. A subsequent
+native Waypoint launch also rendered the game's SMS Protect requirement. The
+account has not completed that requirement, so menu access, gameplay and
+performance remain unqualified. Preview launches
 now stay in Starting until an owned game window exists, and report a missing
 window after 90 seconds while retaining process tracking to block duplicates.
+
+With default exclusive display settings, that native launch switched the
+3456×2234 Retina display from 1728×1117 points at 2x to 3456×2234 points at 1x,
+while the game window retained 1728×1117 dimensions. Exiting restored 2x.
+An isolated borderless launch kept 1728×1117 points at 2x throughout three
+observations over 30 seconds; its window covered the display and its captured
+image measured 3456×2234 pixels. Running production preparation against the
+installed game's prefix seeded the same settings; a subsequent direct launch
+also covered the display at 2x, rendering the in-game login screen. These checks
+verify launch geometry, not gameplay or frame rate.
 
 A held-device probe also confirmed the Apple framework and Unix library mapped
 from the overlay. With `WINEDLLPATH` unset, a synthetic game-shaped probe was

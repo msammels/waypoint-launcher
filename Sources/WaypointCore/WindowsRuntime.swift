@@ -348,6 +348,11 @@ public actor WindowsGameSession {
                 try Data(settings.utf8).write(to: variables, options: .atomic)
             }
         }
+        if title == .overwatch {
+            for user in profiles where user.lastPathComponent != "Public" {
+                try OverwatchSettings.seed(in: user.appendingPathComponent("Documents"), display: target.display)
+            }
+        }
         try await clear()
         if let graphicsIdentity { try Data(graphicsIdentity.utf8).write(to: graphicsReady, options: .atomic) }
         try Data((runtimeID + "\n").utf8).write(to: ready, options: .atomic)
