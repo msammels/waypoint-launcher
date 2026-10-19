@@ -4,6 +4,8 @@ import Foundation
 /// URLSession download convenience API bypasses these delivery callbacks.
 final class DownloadTransfer: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let limiter: DownloadBandwidthLimiter
+    private let progress: @Sendable (Int64, Int64) -> Void
+    private let maximumBytes: Int64?
     private let lock = NSLock()
     private var task: URLSessionDownloadTask?
     private var continuation: CheckedContinuation<(URL, URLResponse), Error>?
@@ -11,7 +13,12 @@ final class DownloadTransfer: NSObject, URLSessionDownloadDelegate, @unchecked S
     private var file: URL?
     private var fileError: Error?
 
-    init(limiter: DownloadBandwidthLimiter) { self.limiter = limiter }
+    init(limiter: DownloadBandwidthLimiter, maximumBytes: Int64? = nil,
+         progress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }) {
+        self.limiter = limiter
+        self.maximumBytes = maximumBytes
+        self.progress = progress
+    }
 
     func download(session: URLSession, request: URLRequest, resumeData: Data? = nil) async throws -> (URL, URLResponse) {
         let result: (URL, URLResponse) = try await withTaskCancellationHandler {
@@ -50,6 +57,12 @@ final class DownloadTransfer: NSObject, URLSessionDownloadDelegate, @unchecked S
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
                     didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
         limiter.received(bytesWritten, from: downloadTask)
+        if let maximumBytes, totalBytesWritten > maximumBytes {
+            lock.withLock { fileError = URLError(.dataLengthExceedsMaximum) }
+            downloadTask.cancel()
+            return
+        }
+        progress(totalBytesWritten, totalBytesExpectedToWrite)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {

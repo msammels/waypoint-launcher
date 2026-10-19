@@ -8,7 +8,7 @@ final class AppModel {
     enum Phase: Equatable {
         case idle
         case signingIn
-        case preparingWindows
+        case preparingWindows(UpdateProgress?)
         case launching
         case updating(UpdateProgress?)
         case pausing(UpdateProgress?)
@@ -341,7 +341,7 @@ final class AppModel {
 
     /// Only one sign-in at a time: the login window and the hidden web view
     /// each serve a single request.
-    var isSigningIn: Bool { isAddingAccount || isManagingSavedLogin || phases.values.contains(.signingIn) || phases.values.contains(.preparingWindows) }
+    var isSigningIn: Bool { isAddingAccount || isManagingSavedLogin || phases.values.contains(.signingIn) || phases.values.contains(.preparingWindows(nil)) }
 
     func canPlay(_ game: Game) -> Bool {
         game.isSupported && !isRunning(game) && !isBusy(game) && !isSigningIn
@@ -369,8 +369,13 @@ final class AppModel {
             let display = mode.map { WindowsDisplay(width: $0.pixelWidth, height: $0.pixelHeight,
                                                     framesPerSecond: screen?.maximumFramesPerSecond ?? 60) }
             let plan = try GameLauncher.plan(for: game, region: regionOverride, display: display)
-            if plan.isWindows { phases[game.id] = .preparingWindows }
-            let session = try await GameLauncher.prepareWindows(plan)
+            if plan.isWindows { phases[game.id] = .preparingWindows(nil) }
+            let session = try await GameLauncher.prepareWindows(plan) { [weak self] progress in
+                Task { @MainActor in
+                    guard let self, case .preparingWindows = self.phases[game.id] else { return }
+                    self.phases[game.id] = .preparingWindows(progress.completedFiles == progress.totalFiles ? nil : progress)
+                }
+            }
             phases[game.id] = .signingIn
             guard let token = await token(for: plan, gameName: game.displayName, account: account,
                                           activate: accountID == nil, forceSignIn: forceSignIn) else {

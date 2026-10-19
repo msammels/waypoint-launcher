@@ -20,9 +20,12 @@ struct WindowsLaunchTarget: Equatable, Sendable {
 
 public enum WindowsHeroes {
     public static var resources: URL? {
-        guard let url = Bundle.main.sharedSupportURL?.appendingPathComponent("Windows"),
-              FileManager.default.fileExists(atPath: url.appendingPathComponent("runtime.json").path) else { return nil }
-        return url
+        let fm = FileManager.default
+        if let url = Bundle.main.sharedSupportURL?.appendingPathComponent("Windows"),
+           fm.fileExists(atPath: url.appendingPathComponent("runtime.json").path) { return url }
+        if let url = Bundle.main.resourceURL?.appendingPathComponent("WindowsRuntime"),
+           fm.fileExists(atPath: url.appendingPathComponent("distribution.json").path) { return url }
+        return nil
     }
 
     static var isHostSupported: Bool {
@@ -46,7 +49,7 @@ public enum WindowsHeroes {
             case .unavailable: "This build of Waypoint does not include the Windows version of Heroes of the Storm."
             case .unsupportedHost: "The Windows version of Heroes of the Storm requires an Apple silicon Mac with macOS 15 or later and Rosetta."
             case .busy: "Heroes of the Storm is already running or starting."
-            case .invalidRuntime: "The Windows game components are incomplete. Reinstall Waypoint to repair them."
+            case .invalidRuntime: "The Windows game components could not be verified. Try again to download a fresh copy."
             case .startup: "The Windows version of Heroes of the Storm closed before finishing startup."
             }
         }
@@ -148,7 +151,7 @@ public enum WindowsHeroes {
         await session.recoverExitCleanup()
     }
 
-    private static func sha256(_ file: URL) throws -> String {
+    static func sha256(_ file: URL) throws -> String {
         let handle = try FileHandle(forReadingFrom: file)
         defer { try? handle.close() }
         var hash = SHA256()
@@ -182,7 +185,7 @@ public actor WindowsHeroesSession {
         prefix = home.appendingPathComponent("prefix-v1", isDirectory: true)
     }
 
-    func prepare() async throws {
+    func prepare(progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws {
         guard WindowsHeroes.isHostSupported else { throw WindowsHeroes.Failure.unsupportedHost }
         let root = URL(fileURLWithPath: target.install.installPath, isDirectory: true)
         try target.install.platform.validate(install: target.install)
@@ -200,8 +203,16 @@ public actor WindowsHeroesSession {
         prefixValidated = true
         var backup = URLResourceValues(); backup.isExcludedFromBackup = true
         var prefixURL = prefix; try prefixURL.setResourceValues(backup)
-        let resources = target.resources
-        runtime = try await Task.detached { try WindowsHeroes.installRuntime(from: resources) }.value
+        let resources: URL
+        if let custom = UserDefaults.standard.string(forKey: "windowsRuntimeOverride") {
+            // An explicit local choice lets users run their own compatible
+            // LGPL builds. Never weaken verification of downloaded components.
+            guard custom.hasPrefix("/") else { throw WindowsHeroes.Failure.invalidRuntime }
+            resources = URL(fileURLWithPath: custom, isDirectory: true)
+        } else {
+            resources = target.resources
+        }
+        runtime = try await WindowsRuntimeDownload.prepare(from: resources, progress: progress)
         let ready = prefix.appendingPathComponent(".waypoint-ready-v1")
         let runtimeID = runtime!.lastPathComponent
         let previousRuntime = (try? String(contentsOf: ready, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)

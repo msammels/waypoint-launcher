@@ -96,10 +96,11 @@ public enum GameLauncher {
         }
     }
 
-    public static func prepareWindows(_ plan: LaunchPlan) async throws -> WindowsHeroesSession? {
+    public static func prepareWindows(_ plan: LaunchPlan,
+                                      progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws -> WindowsHeroesSession? {
         guard let target = plan.windows else { return nil }
         let session = try WindowsHeroesSession(target: target)
-        do { try await session.prepare() }
+        do { try await session.prepare(progress: progress) }
         catch { await session.preparationFailed(); throw error }
         return session
     }

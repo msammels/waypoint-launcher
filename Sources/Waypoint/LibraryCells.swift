@@ -86,6 +86,14 @@ final class GameCell: NSView {
         detail.textColor = .secondaryLabelColor
         detail.toolTip = nil
         switch state.phase {
+        case .preparingWindows(let update):
+            if let update {
+                progress.doubleValue = update.fraction
+                progress.isHidden = false
+                detail.stringValue = "Windows components: " + progressDescription(update, waiting: "Downloading…")
+            } else {
+                detail.stringValue = "Preparing Windows version…"
+            }
         case .updating(let update):
             progress.doubleValue = update?.fraction ?? 0
             progress.isHidden = false
