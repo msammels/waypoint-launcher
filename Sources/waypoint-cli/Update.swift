@@ -154,14 +154,14 @@ func fetch(_ args: [String]) async {
 /// `install <uid> <dir> [--language xxXX] [--speech xxXX] [--region eu] [--only regex] [--dry-run] [--state file]`:
 /// installs a game from scratch into `<dir>` (its install root, e.g. /Applications/World of Warcraft).
 func install(_ args: [String]) async {
-    let usage = "usage: waypoint-cli install <uid> <dir> [--language enUS] [--speech enUS] [--region eu|us|kr|cn] [--only regex] [--dry-run] [--state file]"
+    let usage = "usage: waypoint-cli install <uid> <dir> [--platform mac|win] [--language enUS] [--speech enUS] [--region eu|us|kr|cn] [--only regex] [--dry-run] [--state file]"
         + "\n  uids: " + InstallableProduct.all.map(\.uid).joined(separator: " ")
     var positional: [String] = []
     var options: [String: String] = [:]
     var flags: Set<String> = []
     var i = 0
     while i < args.count {
-        if ["--language", "--speech", "--region", "--only", "--state", "--dump-keys"].contains(args[i]), i + 1 < args.count {
+        if ["--platform", "--language", "--speech", "--region", "--only", "--state", "--dump-keys"].contains(args[i]), i + 1 < args.count {
             options[args[i]] = args[i + 1]
             i += 2
             continue
@@ -172,6 +172,8 @@ func install(_ args: [String]) async {
     guard positional.count == 2,
           let product = InstallableProduct.all.first(where: { $0.uid == positional[0] || $0.productCode == positional[0] })
     else { fail(usage) }
+    guard let platform = options["--platform"].map({ InstallPlatform(rawValue: $0) })
+            ?? (product.supportedPlatforms == [.windows] ? .windows : .macOS) else { fail(usage) }
     guard let region = options["--region"].map({ Region(rawValue: $0) }) ?? Region.preferred(games: GameLibrary().games()) else { fail(usage) }
     let languages = GameLanguages(text: options["--language"] ?? product.defaultLanguage(), speech: options["--speech"])
     checkLanguages(languages, for: product)
@@ -180,7 +182,7 @@ func install(_ args: [String]) async {
 
     let store = options["--state"].map { InstallStateStore(file: URL(fileURLWithPath: $0)) } ?? InstallStateStore()
     let installer = GameInstaller(product: product, folder: URL(fileURLWithPath: positional[1]).standardizedFileURL,
-                                  region: region, languages: languages, store: store)
+                                  region: region, languages: languages, store: store, platform: platform)
     print("\(product.displayName) → \(installer.folder.path) (\(region.displayName), text \(languages.text), speech \(languages.speech))")
     do {
         var only: (@Sendable (String) -> Bool)?

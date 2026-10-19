@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import CryptoKit
 import WaypointCore
 
 @MainActor
@@ -30,7 +31,7 @@ final class AppModel {
     private var discoveredGames: [Game] = []
     private var pendingHeroesInstall: ProductInstall?
     private var heroesPlatform = UserDefaults.standard.string(forKey: "heroesPlatform").flatMap(InstallPlatform.init(rawValue:)) ?? .windows
-    @ObservationIgnored private var windowsSessions: [String: WindowsHeroesSession] = [:]
+    @ObservationIgnored private var windowsSessions: [String: WindowsGameSession] = [:]
     @ObservationIgnored private var windowsObservers: [Int32: any DispatchSourceProcess] = [:]
     /// Game uid -> phase, so each row shows its own progress.
     private(set) var phases: [String: Phase] = [:]
@@ -139,6 +140,7 @@ final class AppModel {
         if product.productCode == "hero" {
             return pendingHeroesInstall?.platform ?? (WindowsHeroes.isAvailable ? .windows : .macOS)
         }
+        if product.supportedPlatforms == [.windows] { return .windows }
         return .macOS
     }
 
@@ -236,15 +238,20 @@ final class AppModel {
 
     /// Games Waypoint can install that aren't installed yet.
     var installable: [InstallableProduct] {
-        InstallableProduct.all.filter { product in !games.contains { $0.install.uid == product.uid } }
+        InstallableProduct.all.filter { product in
+            !games.contains { $0.install.uid == product.uid } &&
+            (product.supportedPlatforms != [.windows] || WindowsTitle(rawValue: product.productCode)?.isAvailable == true)
+        }
     }
 
-    func phase(of product: InstallableProduct) -> Phase { phase(uid: defaultPlatform(for: product).installKey(uid: product.uid)) }
+    func installKey(for product: InstallableProduct) -> String { defaultPlatform(for: product).installKey(uid: product.uid) }
+    func phase(of product: InstallableProduct) -> Phase { phase(uid: installKey(for: product)) }
 
     /// What an install would download, for the install sheet, and what an
     /// interrupted install into that folder already has.
     func installSize(_ product: InstallableProduct, folder: URL, region: Region,
-                     languages: GameLanguages, platform: InstallPlatform = .macOS) async throws -> (download: UInt64, stored: UInt64) {
+                     languages: GameLanguages, platform requestedPlatform: InstallPlatform? = nil) async throws -> (download: UInt64, stored: UInt64) {
+        let platform = requestedPlatform ?? defaultPlatform(for: product)
         defer { ProcessMemory.releaseFreed() }
         do {
             let plan = try await GameInstaller(product: product, folder: folder, region: region, languages: languages, platform: platform).plan()
@@ -258,10 +265,12 @@ final class AppModel {
     }
 
     func install(_ product: InstallableProduct, folder: URL, region: Region, languages: GameLanguages,
-                 platform: InstallPlatform = .macOS) async {
+                 platform requestedPlatform: InstallPlatform? = nil) async {
+        let platform = requestedPlatform ?? defaultPlatform(for: product)
         defer { ProcessMemory.releaseFreed() }
         let uid = platform.installKey(uid: product.uid)
         guard !isBusy(uid: uid) else { return }
+        guard platform != .windows || acceptGraphicsLicense(for: WindowsTitle(rawValue: product.productCode)) else { return }
         if product.productCode == "hero" {
             guard !isBusy(uid: "heroes"), !isBusy(uid: "heroes@windows") else { return }
             pendingHeroesInstall = product.install(at: folder, region: region, languages: languages,
@@ -357,6 +366,7 @@ final class AppModel {
     /// active one stays active.
     func play(_ game: Game, forceSignIn: Bool = false, as accountID: String? = nil) async {
         guard canPlay(game) else { return }
+        guard acceptGraphicsLicense(for: WindowsTitle.forInstall(game.install)) else { return }
         let account: Account?
         if let accountID {
             guard let other = accountList[accountID] else { return }
@@ -743,13 +753,15 @@ final class AppModel {
         let runningApps = NSWorkspace.shared.runningApplications.compactMap { $0.bundleURL?.standardizedFileURL }
         running = Set(discoveredGames.filter { game in
             if game.install.platform == .windows {
-                return !WineProcesses.heroesAndSwitcher(in: URL(fileURLWithPath: game.install.installPath)).isEmpty
+                guard let title = WindowsTitle.forInstall(game.install), title.isEnabled else { return false }
+                return !WineProcesses.gameAndLaunchers(in: URL(fileURLWithPath: game.install.installPath), title: title).isEmpty
             }
             guard let app = game.appURL?.standardizedFileURL else { return false }
             return runningApps.contains(app)
         }.map(\.id)).union(windowsSessions.keys)
         for game in discoveredGames where game.install.platform == .windows {
-            for pid in WineProcesses.heroesAndSwitcher(in: URL(fileURLWithPath: game.install.installPath)) {
+            guard let title = WindowsTitle.forInstall(game.install), title.isEnabled else { continue }
+            for pid in WineProcesses.gameAndLaunchers(in: URL(fileURLWithPath: game.install.installPath), title: title) {
                 observeWindowsExit(pid: pid, game: game)
             }
         }
@@ -773,7 +785,7 @@ final class AppModel {
                         self.refreshRunning()
                     }
                 } else {
-                    Task { await WindowsHeroes.cleanupAfterExit(install: game.install) }
+                    Task { await WindowsRuntime.cleanupAfterExit(install: game.install) }
                 }
                 self.refreshRunning()
             }
@@ -786,10 +798,11 @@ final class AppModel {
     /// activate. Reveal the GUI after this Play action while Waypoint still
     /// owns focus; switching to another app cancels the request.
     private func revealWindowsGame(_ game: Game) async {
+        guard let title = WindowsTitle.forInstall(game.install), title.isEnabled else { return }
         let root = URL(fileURLWithPath: game.install.installPath)
         for _ in 0..<120 {
             guard windowsSessions[game.id] != nil, NSApp.isActive, !Task.isCancelled else { return }
-            if let pid = WineProcesses.heroes(in: root).first,
+            if let pid = WineProcesses.gameCore(in: root, title: title).first,
                let app = NSRunningApplication(processIdentifier: pid),
                app.isFinishedLaunching, app.activationPolicy == .regular {
                 app.activate(options: [.activateAllWindows])
@@ -797,5 +810,41 @@ final class AppModel {
             }
             try? await Task.sleep(for: .milliseconds(250))
         }
+    }
+
+    /// Apple's component has separate terms. Keep consent local and keyed to
+    /// the actual license bytes, shared by games that use the same component.
+    private func acceptGraphicsLicense(for title: WindowsTitle?) -> Bool {
+        guard title?.backend == .d3dMetal else { return true }
+        guard let data = try? WindowsGraphics.licenseData(),
+              let text = try? NSAttributedString(data: data, options: [.documentType: NSAttributedString.DocumentType.rtf], documentAttributes: nil)
+        else {
+            let alert = NSAlert()
+            alert.messageText = "Graphics component unavailable"
+            alert.informativeText = "The graphics license could not be verified. Reinstall or update Waypoint before trying again."
+            alert.runModal()
+            return false
+        }
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let key = "acceptedWindowsGraphicsLicense"
+        if UserDefaults.standard.string(forKey: key) == hash { return true }
+        let alert = NSAlert()
+        alert.messageText = "Apple graphics components"
+        alert.informativeText = "\(title!.displayName) uses Apple's D3DMetal graphics component, provided under the license below. Review the terms before continuing."
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 250))
+        scroll.hasVerticalScroller = true
+        let view = NSTextView(frame: scroll.bounds)
+        view.isEditable = false
+        view.isSelectable = true
+        view.autoresizingMask = [.width]
+        view.textContainer?.widthTracksTextView = true
+        view.textStorage?.setAttributedString(text)
+        scroll.documentView = view
+        alert.accessoryView = scroll
+        alert.addButton(withTitle: "Agree and Continue")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        UserDefaults.standard.set(hash, forKey: key)
+        return true
     }
 }

@@ -15,8 +15,10 @@ public enum InstallPlatform: String, Codable, Sendable, CaseIterable {
     public static func from(tags: String?) -> InstallPlatform? {
         guard let tags else { return nil }
         let words = Set(tags.split { $0.isWhitespace || $0 == ":" }.map(String.init))
-        if words.contains("OSX") && words.contains("Windows") { return nil }
-        if words.contains("Windows") { return .windows }
+        // Overwatch's Windows manifests use SPWin/TPWin, not "Windows".
+        let windows = !words.isDisjoint(with: ["Windows", "SPWin", "TPWin"])
+        if words.contains("OSX") && windows { return nil }
+        if windows { return .windows }
         if words.contains("OSX") { return .macOS }
         return nil
     }
@@ -34,8 +36,8 @@ public enum InstallPlatform: String, Codable, Sendable, CaseIterable {
         }
         func check(_ tags: String, strict: Bool) throws {
             let words = Set(tags.split { $0.isWhitespace || $0 == ":" }.map(String.init))
-            let other = self == .macOS ? "Windows" : "OSX"
-            if words.contains(other) || (strict && Self.from(tags: tags) != self) {
+            let other = self == .macOS ? !words.isDisjoint(with: ["Windows", "SPWin", "TPWin"]) : words.contains("OSX")
+            if other || (strict && Self.from(tags: tags) != self) {
                 throw TACTError.malformed("This folder contains another platform's game files. Choose a separate folder")
             }
         }

@@ -1,7 +1,7 @@
 import Foundation
 
-/// A Battle.net game with a macOS client: what Waypoint needs to install and
-/// launch it. Layout facts come from each product's Blizzard product config
+/// A supported Battle.net game: what Waypoint needs to install and launch it.
+/// Layout facts come from each product's Blizzard product config
 /// (see ProductConfig); tags and folders are re-read from it at install
 /// time, so this only pins down what doesn't change between builds.
 public struct InstallableProduct: Sendable, Identifiable, Equatable {
@@ -12,12 +12,12 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
     public var uid: String
     public var productCode: String
     public var displayName: String
-    /// Default folder under /Applications. WoW flavors share one.
+    /// Default folder name. Native WoW flavors share one.
     public var folderName: String
     /// `Launch Options/<codename>/…` in the net.battle preferences, and the
     /// web login's `app=` value.
     public var codename: String
-    /// The game's `.app`, relative to the install root (flavor folder included).
+    /// Native `.app` relative to the install root; empty for Windows-only titles.
     public var appPath: String
     /// Arguments from the product config; Waypoint adds `-uid <uid>`. Where
     /// the config has an `sso_launch_argument` (HotS, SC2, D3), Battle.net
@@ -43,7 +43,17 @@ public struct InstallableProduct: Sendable, Identifiable, Equatable {
         appPath: "Hearthstone.app", launchArguments: ["-launch"], flavorFolder: nil, isContainerless: true,
         languages: commonLanguages + ["jaJP", "thTH"])
 
-    public static let all: [InstallableProduct] = [
+    public static var all: [InstallableProduct] {
+        native + WindowsTitle.enabled.filter { $0 != .heroes }.map(\.product)
+    }
+
+    public var supportedPlatforms: Set<InstallPlatform> {
+        if productCode == "hero" { return [.macOS, .windows] }
+        if WindowsTitle(rawValue: productCode) != nil { return [.windows] }
+        return [.macOS]
+    }
+
+    public static let native: [InstallableProduct] = [
         .hearthstone,
         InstallableProduct(uid: "wow", productCode: "wow", displayName: "World of Warcraft", folderName: "World of Warcraft",
                            codename: "WoW", appPath: "_retail_/World of Warcraft.app", launchArguments: ["-launcherlogin"],

@@ -18,6 +18,6 @@ let package = Package(
             .product(name: "Sparkle", package: "Sparkle"),
         ]),
         .executableTarget(name: "waypoint-cli", dependencies: ["WaypointCore"]),
-        .testTarget(name: "WaypointCoreTests", dependencies: ["WaypointCore"]),
+        .testTarget(name: "WaypointCoreTests", dependencies: ["WaypointCore"], resources: [.copy("Fixtures")]),
     ]
 )

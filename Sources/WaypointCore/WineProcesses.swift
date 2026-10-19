@@ -18,6 +18,18 @@ public enum WineProcesses {
         matching(in: directory, runtime: runtime, names: ["heroesofthestorm_x64.exe", "heroesswitcher_x64.exe"])
     }
 
+    public static func gameCore(in directory: URL, title: WindowsTitle, runtime: URL? = nil) -> [Int32] {
+        matching(in: directory, runtime: runtime, names: title.coreNames)
+    }
+
+    public static func gameAndLaunchers(in directory: URL, title: WindowsTitle, runtime: URL? = nil) -> [Int32] {
+        matching(in: directory, runtime: runtime, names: title.processNames)
+    }
+
+    static func ownedGames(runtimeCache: URL) -> [Int32] {
+        matching(in: nil, runtime: runtimeCache, names: Set(WindowsTitle.allCases.flatMap(\.processNames)))
+    }
+
     static func ownedHeroesAndSwitcher(runtimeCache: URL) -> [Int32] {
         matching(in: nil, runtime: runtimeCache, names: ["heroesofthestorm_x64.exe", "heroesswitcher_x64.exe"])
     }

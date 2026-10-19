@@ -24,8 +24,9 @@ public struct Game: Identifiable, Equatable, Sendable {
 
     public var isInstalled: Bool {
         if install.platform == .windows {
-            return install.productCode == "hero" && FileManager.default.fileExists(atPath:
-                URL(fileURLWithPath: install.installPath).appendingPathComponent("Support64/HeroesSwitcher_x64.exe").path)
+            guard let title = WindowsTitle.forInstall(install) else { return false }
+            return FileManager.default.fileExists(atPath:
+                URL(fileURLWithPath: install.installPath).appendingPathComponent(title.executablePath).path)
         }
         return appURL != nil
     }
@@ -33,8 +34,9 @@ public struct Game: Identifiable, Equatable, Sendable {
     /// Whether Waypoint knows how to log this game in without Battle.net.
     /// Intel-only games run through Rosetta when it's installed.
     public var isSupported: Bool {
-        if install.platform == .windows { return isInstalled && WindowsHeroes.isAvailable }
-        return InstallableProduct.forProduct(install.productCode) != nil && appURL != nil && (runsNatively || Rosetta.isInstalled)
+        if install.platform == .windows { return isInstalled && WindowsTitle.forInstall(install)?.isAvailable == true }
+        return InstallableProduct.forProduct(install.productCode)?.supportedPlatforms.contains(.macOS) == true &&
+            appURL != nil && (runsNatively || Rosetta.isInstalled)
     }
 }
 
@@ -83,7 +85,7 @@ public enum GameCatalog {
     public static func game(for install: ProductInstall, fileManager: FileManager = .default) -> Game {
         if install.platform == .windows {
             return Game(install: install, family: .other,
-                        displayName: InstallableProduct.forProduct(install.productCode)?.displayName ?? install.productCode,
+                        displayName: WindowsTitle.forInstall(install)?.displayName ?? install.productCode,
                         appURL: nil, architectures: [.x86_64])
         }
         let family = family(for: install.productCode)
@@ -107,7 +109,7 @@ public enum GameCatalog {
         }
 
         // Known products: the exact app the product config names.
-        if let product = InstallableProduct.forProduct(install.productCode) {
+        if let product = InstallableProduct.forProduct(install.productCode), product.supportedPlatforms.contains(.macOS) {
             name = product.displayName
             if let exact = existing(root.appendingPathComponent(product.appPath), fileManager) { appURL = exact }
         }
@@ -159,9 +161,12 @@ public struct GameLibrary {
     /// Every supported game's default folder: Battle.net can forget a game
     /// (it lost HotS once), and Waypoint should still find it there rather
     /// than offer a fresh install.
-    public static let defaultSearchRoots: [URL] = InstallableProduct.all.map(\.folderName)
+    public static let defaultSearchRoots: [URL] = InstallableProduct.native.map(\.folderName)
         .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
         .map { URL(fileURLWithPath: "/Applications").appendingPathComponent($0, isDirectory: true) }
+        + WindowsTitle.enabled.map {
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Games/" + $0.folderName + " (Windows)", isDirectory: true)
+        }
 
     public init(agentDatabase: URL = ProductDB.agentDatabaseURL,
                 searchRoots: [URL] = GameLibrary.defaultSearchRoots,

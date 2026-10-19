@@ -32,23 +32,26 @@ public enum LaunchError: Error, CustomStringConvertible {
 
 public enum GameLauncher {
     public static func plan(for game: Game, region override: Region? = nil,
-                            display: WindowsDisplay? = nil, windowsResources: URL? = WindowsHeroes.resources) throws -> LaunchPlan {
+                            display: WindowsDisplay? = nil, windowsResources: URL? = WindowsRuntime.resources,
+                            windowsBridge: URL? = WindowsRuntime.bridgeResources,
+                            windowsGraphics: URL? = WindowsGraphics.resources) throws -> LaunchPlan {
         if game.install.platform == .windows {
-            guard game.install.productCode == "hero", game.install.uid == "heroes" else { throw LaunchError.unsupported(game.displayName) }
+            guard let title = WindowsTitle.forInstall(game.install), title.isEnabled else { throw LaunchError.unsupported(game.displayName) }
             guard game.isInstalled else { throw LaunchError.notInstalled(game.displayName) }
             guard Rosetta.isInstalled else { throw LaunchError.intelOnly(game.displayName) }
             guard let resources = windowsResources else { throw WindowsHeroes.Failure.unavailable }
             let root = URL(fileURLWithPath: game.install.installPath, isDirectory: true)
             return LaunchPlan(executable: resources.appendingPathComponent("wine/bin/wine"),
                 arguments: [resources.appendingPathComponent("waypoint-launch-options.exe").path],
-                workingDirectory: root, codename: "Hero",
+                workingDirectory: root, codename: title.codename,
                 region: override ?? game.install.region.flatMap(Region.init(rawValue:)) ?? .us,
                 locale: game.install.tagString.flatMap(TagLanguages.text(in:)) ?? game.install.textLanguage,
-                windows: WindowsLaunchTarget(install: game.install, resources: resources, display: display))
+                windows: WindowsLaunchTarget(install: game.install, resources: resources, display: display,
+                    bridgeResources: windowsBridge, graphicsResources: windowsGraphics))
         }
         guard let appURL = game.appURL else { throw LaunchError.notInstalled(game.displayName) }
         guard game.runsNatively || Rosetta.isInstalled else { throw LaunchError.intelOnly(game.displayName) }
-        guard let product = InstallableProduct.forProduct(game.install.productCode),
+        guard let product = InstallableProduct.forProduct(game.install.productCode), product.supportedPlatforms.contains(.macOS),
               let executable = Bundle(url: appURL)?.executableURL
         else { throw LaunchError.unsupported(game.displayName) }
 
@@ -80,7 +83,7 @@ public enum GameLauncher {
     /// Hands the token to the game and starts it. The game outlives us.
     @discardableResult
     public static func launch(_ plan: LaunchPlan, token: LoginToken, gameName: String) throws -> Int32 {
-        guard !plan.isWindows else { throw LaunchError.unsupported("Launch Windows HotS from Waypoint") }
+        guard !plan.isWindows else { throw LaunchError.unsupported("Launch Windows games from Waypoint") }
         try LaunchOptions(gameKey: plan.codename).write(token: token.value, region: plan.region, locale: plan.locale)
         Log.info(.launch, "launch_options_written", nil, ["codename": plan.codename, "region": plan.region.rawValue, "locale": plan.locale ?? "-"])
 
@@ -97,19 +100,19 @@ public enum GameLauncher {
     }
 
     public static func prepareWindows(_ plan: LaunchPlan,
-                                      progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws -> WindowsHeroesSession? {
+                                      progress: @escaping @Sendable (UpdateProgress) -> Void = { _ in }) async throws -> WindowsGameSession? {
         guard let target = plan.windows else { return nil }
-        let session = try WindowsHeroesSession(target: target)
+        let session = try WindowsGameSession(target: target)
         do { try await session.prepare(progress: progress) }
         catch { await session.preparationFailed(); throw error }
         return session
     }
 
     public static func launchWindows(_ plan: LaunchPlan, token: LoginToken,
-                                     session: WindowsHeroesSession, gameName: String) async throws -> Int32 {
+                                     session: WindowsGameSession, gameName: String) async throws -> Int32 {
         guard let target = plan.windows, await session.matches(target) else { throw LaunchError.unsupported(gameName) }
         let pid = try await session.launch(token: token, region: plan.region, locale: plan.locale)
-        Log.notice(.launch, "spawned", nil, ["game": gameName, "pid": pid, "platform": "windows", "backend": "dxmt"])
+        Log.notice(.launch, "spawned", nil, ["game": gameName, "pid": pid, "platform": "windows", "backend": WindowsTitle.forInstall(target.install)?.backend.rawValue ?? "unknown"])
         return pid
     }
 }

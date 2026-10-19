@@ -86,6 +86,10 @@ Play instead of bundling it into every Waypoint update. A verified cached copy
 works without another download. Windows HotS needs macOS 15+, Apple silicon and
 Rosetta; native games retain the macOS 14 minimum.
 
+Development builds can additionally test Windows-only Battle.net titles with
+`WINDOWS_EXPERIMENTAL=1`. These profiles are not enabled in public releases;
+see [profiles, components and qualification status](tools/wine-runtime/WINDOWS-TITLES.md).
+
 <details>
 <summary><b>Making a release</b></summary>
 

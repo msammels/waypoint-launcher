@@ -15,6 +15,8 @@
 #                  build/windows-runtime-release/distribution if present).
 #                  A staged full runtime remains supported for local builds.
 #                  Set to "none" to omit Windows HotS support.
+#   WINDOWS_EXPERIMENTAL=1 enables unqualified Battle.net Windows profiles in
+#                  local builds, including their title bridge and graphics descriptor.
 #
 # Uses Xcode's toolchain: open-source toolchains may not match the installed SDK.
 set -euo pipefail
@@ -34,7 +36,9 @@ fi
 # the release machine's keychain (generate_keys --account waypoint).
 sparkle_public_key="mfL3STHC28BUAVXlUOjMVv0pZ8noAtFWM115ekfpbsg="
 
-nice -n 19 xcrun swift build -c release --arch arm64 --product Waypoint
+swift_flags=()
+[[ "${WINDOWS_EXPERIMENTAL:-0}" != "1" ]] || swift_flags=(-Xswiftc -DWAYPOINT_WINDOWS_EXPERIMENTAL)
+nice -n 19 xcrun swift build -c release --arch arm64 --product Waypoint "${swift_flags[@]}"
 bin_dir="$(xcrun swift build -c release --arch arm64 --show-bin-path)"
 
 app="${APP_PATH:-build/Waypoint.app}"
@@ -76,7 +80,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>Heroes of the Storm uses the microphone for in-game voice chat.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Windows games use the microphone for in-game voice chat.</string>
     <!-- Installs and updates allocate big buffers; malloc's large cache would
          keep them dirty after they're freed (80 MB vs 6 MB idle afterwards). -->
     <key>LSEnvironment</key><dict><key>MallocLargeCache</key><string>0</string></dict>
@@ -111,6 +115,26 @@ elif [[ -n "${WINDOWS_RUNTIME:-}" && "$windows_runtime" != "none" ]]; then
     exit 1
 fi
 if [[ -d "$app/Contents/SharedSupport/Windows" || -d "$app/Contents/Resources/WindowsRuntime" ]]; then
+    if [[ "${WINDOWS_EXPERIMENTAL:-0}" == "1" ]]; then
+    # The per-title bridge is small and independent of the cached Wine engine.
+    scripts/build-windows-helper.sh build/windows-bridge --titles
+    mkdir -p "$app/Contents/Resources/WindowsBridge"
+    cp build/windows-bridge/waypoint-launch-options.exe "$app/Contents/Resources/WindowsBridge/"
+    python3 - "$app/Contents/Resources/WindowsBridge" <<'PYBRIDGE'
+import hashlib,json,pathlib,sys
+p=pathlib.Path(sys.argv[1]);h=hashlib.sha256((p/"waypoint-launch-options.exe").read_bytes()).hexdigest()
+(p/"manifest.json").write_text(json.dumps({"schema":2,"sha256":h},indent=2)+"\n")
+PYBRIDGE
+    python3 - <<'PYGRAPHICS'
+import hashlib,json,pathlib
+p=pathlib.Path("Resources/WindowsGraphics")
+assert {x.name for x in p.iterdir()}=={"manifest.json","License.rtf"}, "Unexpected graphics resources; do not bundle third-party binaries"
+m=json.loads((p/"manifest.json").read_text())
+assert hashlib.sha256((p/"License.rtf").read_bytes()).hexdigest()==m["files"]["License.rtf"], "Graphics license differs from the pinned component"
+PYGRAPHICS
+    mkdir -p "$app/Contents/Resources/WindowsGraphics"
+    cp Resources/WindowsGraphics/manifest.json Resources/WindowsGraphics/License.rtf "$app/Contents/Resources/WindowsGraphics/"
+    fi
     sign --entitlements tools/wine-runtime/waypoint.entitlements "$app"
 else
     sign "$app"

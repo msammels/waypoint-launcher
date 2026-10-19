@@ -1,0 +1,41 @@
+{
+  "archivePrefix": "Template-1.0.15.app/Contents/Frameworks/renderer/d3dmetal",
+  "bytes": 87477092,
+  "files": {
+    "Acknowledgements.rtf": "6f3aa835f6d0d06f89997d0a346a209e39a8105521fd939e096c5b24dc0cb0a6",
+    "License.rtf": "5abb2d059be217663b00e8fd37e14411d374e11d17e3b744eebd49b8d17118c8",
+    "Read Me.rtf": "6b13ea7520fd9e855cb69e55aaaa76afd8c7cf07004efef0aa1e84af239daa83",
+    "external/D3DMetal.framework/Versions/A/D3DMetal": "05a7beaed4494a4f5f53d3f626a82fffc3b70146436a908b7048a0632a49e1a8",
+    "external/D3DMetal.framework/Versions/A/Resources/Info.plist": "f78c35028e89f5e63c0ac86369914ad4140f896f4f33ae1e784d98bcc8b9e385",
+    "external/D3DMetal.framework/Versions/A/Resources/LICENSE": "553d0035773ddd1590045f8fdc3a4c6ead31e36336721aeca8421e88ed1c9f80",
+    "external/D3DMetal.framework/Versions/A/Resources/default.metallib": "827367204df88f3c0ce8e1b44a57b107e56bc93da14eb39f7207e9dcab54b430",
+    "external/D3DMetal.framework/Versions/A/Resources/libdxccontainer.dylib": "298b93399a131b75b6b7756bcb2a93546b7250cb9d7e5ecc658587d86be3a1ec",
+    "external/D3DMetal.framework/Versions/A/Resources/libdxcompiler.dylib": "3d0b15eb11b0da64e73fa32062d8cb56061f3e11de37afa101547a0e3a7662ad",
+    "external/D3DMetal.framework/Versions/A/Resources/libdxilconv.dylib": "86bbd7de16c00c735c37cf4fa82b7b16a5f83647958e9ff06668f8cb65a56e61",
+    "external/D3DMetal.framework/Versions/A/Resources/libmetalirconverter.dylib": "3ece96e39a4c1566892908562a61775561a5cd708681c58f2ac442dc0dbe2397",
+    "external/D3DMetal.framework/Versions/A/Resources/version.plist": "6b328e5b67eabeb0fa0dd21a7d13799b7b909fc2741c9f6a9a131ac7b93a57a7",
+    "external/D3DMetal.framework/Versions/A/_CodeSignature/CodeResources": "1060960b73c3d5e563485969e3594b4a5806107b771a6f1caa72084e8b7cea40",
+    "external/libd3dshared.dylib": "5131e631eee8b542eadf48f4df9fd662d9aeeb59139137e0e6e14047dc434995",
+    "wine/x86_64-windows/atidxx64.dll": "bd004dd9e41415b0e1395d51a2ded762a02c7731491e74ed6076f3648ae9ea7f",
+    "wine/x86_64-windows/d3d11.dll": "05fa6f700fb5ee5561dc3a46d98f0aed845d4fa8ab274bff1dc604b0b3f6edd1",
+    "wine/x86_64-windows/d3d12.dll": "27dcf69bedb20ed557a83953e356ab2477b688c2a2c631f880b7583f30ff0705",
+    "wine/x86_64-windows/dxgi.dll": "249711d3d786a9b0bb7c3558f36e472ab07ee21b8dbf118e34c975046832f9a2",
+    "wine/x86_64-windows/nvapi64.dll": "8e1e6cde85551360d7a061a09445500f3c38805651502f3be65049d937c6960c",
+    "wine/x86_64-windows/nvngx.dll": "d7c0df74d9bb4de5e2a3cc357b2309148fd3fdc824fe7941e4d789dbd072ff99"
+  },
+  "schema": 1,
+  "sha256": "34273bcce885ce5a7fd6937af9ea344bb9961de7d55d6193f7413142e835c8c3",
+  "symlinks": {
+    "external/D3DMetal.framework/D3DMetal": "Versions/Current/D3DMetal",
+    "external/D3DMetal.framework/Resources": "Versions/Current/Resources",
+    "external/D3DMetal.framework/Versions/Current": "A",
+    "wine/x86_64-unix/atidxx64.so": "../../external/libd3dshared.dylib",
+    "wine/x86_64-unix/d3d11.so": "../../external/libd3dshared.dylib",
+    "wine/x86_64-unix/d3d12.so": "../../external/libd3dshared.dylib",
+    "wine/x86_64-unix/dxgi.so": "../../external/libd3dshared.dylib",
+    "wine/x86_64-unix/nvapi64.so": "../../external/libd3dshared.dylib",
+    "wine/x86_64-unix/nvngx.so": "../../external/libd3dshared.dylib"
+  },
+  "url": "https://github.com/Sikarugir-App/Wrapper/releases/download/v1.0/Template-1.0.15.tar.xz",
+  "version": "D3DMetal 3.0"
+}

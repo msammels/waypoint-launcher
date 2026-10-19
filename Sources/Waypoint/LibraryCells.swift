@@ -246,7 +246,10 @@ final class GameCell: NSView {
             parts.append(version.split(separator: ".").prefix(3).joined(separator: "."))
         }
         if let region = game.install.region { parts.append(region.uppercased()) }
-        if game.install.platform == .windows { parts.append("Windows") }
+        if game.install.platform == .windows {
+            parts.append("Windows")
+            if WindowsTitle.forInstall(game.install)?.isQualified == false { parts.append("Preview") }
+        }
         else if game.appURL != nil, !game.runsNatively { parts.append("Intel") }
         return parts.joined(separator: " · ")
     }
@@ -284,7 +287,7 @@ final class InstallableCell: NSView {
         self.state = state
         self.model = model
         name.stringValue = state.product.displayName
-        cancelButton.isHidden = !model.canCancelDownload(uid: state.product.uid)
+        cancelButton.isHidden = !model.canCancelDownload(uid: model.installKey(for: state.product))
         detail.toolTip = nil
         detail.textColor = .secondaryLabelColor
         progress.isHidden = false
@@ -295,19 +298,19 @@ final class InstallableCell: NSView {
             detail.stringValue = message
             detail.toolTip = message
             detail.textColor = .systemRed
-            button.title = model.canResumeDownload(uid: state.product.uid) ? "Resume" : "Try Again…"
+            button.title = model.canResumeDownload(uid: model.installKey(for: state.product)) ? "Resume" : "Try Again…"
             button.isEnabled = true
         case .pausing(let update), .paused(let update):
             let pausing = if case .pausing = state.phase { true } else { false }
             progress.doubleValue = update?.fraction ?? 0
             detail.stringValue = downloadStatus(update, label: pausing ? "Pausing…" : "Paused")
             button.title = pausing ? "Pausing…" : "Resume"
-            button.isEnabled = !pausing && model.canResumeDownload(uid: state.product.uid)
+            button.isEnabled = !pausing && model.canResumeDownload(uid: model.installKey(for: state.product))
         case .updating(let update):
             progress.doubleValue = update?.fraction ?? 0
             detail.stringValue = progressDescription(update, waiting: "Preparing…")
             button.title = "Pause"
-            button.isEnabled = model.canPauseDownload(uid: state.product.uid)
+            button.isEnabled = model.canPauseDownload(uid: model.installKey(for: state.product))
         default:
             button.isHidden = true
         }
@@ -315,12 +318,12 @@ final class InstallableCell: NSView {
 
     @objc private func install() {
         guard let state, let model else { return }
-        if model.canPauseDownload(uid: state.product.uid) {
-            model.pauseDownload(uid: state.product.uid)
+        if model.canPauseDownload(uid: model.installKey(for: state.product)) {
+            model.pauseDownload(uid: model.installKey(for: state.product))
             return
         }
-        if model.canResumeDownload(uid: state.product.uid) {
-            Task { await model.resumeDownload(uid: state.product.uid) }
+        if model.canResumeDownload(uid: model.installKey(for: state.product)) {
+            Task { await model.resumeDownload(uid: model.installKey(for: state.product)) }
             return
         }
         guard case .failed = state.phase else { return }
@@ -329,7 +332,7 @@ final class InstallableCell: NSView {
 
     @objc private func cancelDownload() {
         guard let state, let model else { return }
-        model.cancelDownload(uid: state.product.uid)
+        model.cancelDownload(uid: model.installKey(for: state.product))
     }
 }
 

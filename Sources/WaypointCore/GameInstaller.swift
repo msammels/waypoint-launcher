@@ -58,7 +58,9 @@ public struct GameInstaller: Sendable {
 
     /// `only` limits a loose-file install to some paths (tests, partial installs).
     public func plan(only: (@Sendable (String) -> Bool)? = nil, log: @Sendable (String) -> Void = { _ in }) async throws -> GameInstallPlan {
-        guard platform == .macOS || product.productCode == "hero" else { throw UpdateError.unsupported(product.displayName) }
+        guard product.supportedPlatforms.contains(platform),
+              platform != .windows || WindowsTitle(rawValue: product.productCode)?.isEnabled == true
+        else { throw UpdateError.unsupported(product.displayName) }
         let target = try await versions.latest(product: product.productCode, region: region)
         let config = try await versions.productConfig(product: product.productCode, region: region, version: target, platform: platform)
         let install = product.install(at: folder, region: region, languages: languages,
@@ -154,7 +156,8 @@ public struct GameUpdate: Sendable {
     }
 
     public static func canUpdate(_ install: ProductInstall) -> Bool {
-        (install.platform == .macOS || install.productCode == "hero") &&
+        (install.platform == .macOS ? InstallableProduct.forProduct(install.productCode)?.supportedPlatforms.contains(.macOS) != false
+                                   : WindowsTitle.forInstall(install)?.isEnabled == true) &&
         (GameCatalog.family(for: install.productCode) == .hearthstone || InstallableProduct.forProduct(install.productCode) != nil)
     }
 
