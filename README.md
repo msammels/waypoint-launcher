@@ -81,7 +81,10 @@ To include Windows HotS support, first build the free runtime using the
 [runtime build instructions](tools/wine-runtime/README.md). The component adds
 about 314 MB before compression. Without it, the existing native-only build
 and game support remain available. This feature is currently on the
-`feat/free-windows-hots` branch; it is not part of older published releases.
+`main` branch. Release builds download the component on the first Windows HotS
+Play instead of bundling it into every Waypoint update. A verified cached copy
+works without another download. Windows HotS needs macOS 15+, Apple silicon and
+Rosetta; native games retain the macOS 14 minimum.
 
 <details>
 <summary><b>Making a release</b></summary>

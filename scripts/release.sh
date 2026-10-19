@@ -27,8 +27,10 @@ fail() { print -P "%F{red}error:%f $*" >&2; exit 1 }
 
 version="${1:-}"
 publish=0
-[[ "${2:-}" == "--publish" ]] && publish=1
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "usage: scripts/release.sh <x.y.z> [--publish]"
+mode="${2:-}"
+[[ "$mode" == "--publish" || "$mode" == "--publish-only" ]] && publish=1
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && ( -z "$mode" || "$mode" == "--publish" || "$mode" == "--publish-only" ) ]] \
+    || fail "usage: scripts/release.sh <x.y.z> [--publish|--publish-only]"
 
 tag="v$version"
 repo_url="https://github.com/wowlocal/waypoint-launcher"
@@ -54,6 +56,9 @@ profile="${NOTARY_KEYCHAIN_PROFILE:-${NOTARY_PROFILE:-keys-cli-notary}}"
 app="build/release/Waypoint.app"
 dist="dist"
 dmg="$dist/Waypoint-$version.dmg"
+component="${WINDOWS_COMPONENT_RELEASE:-build/windows-runtime-release}"
+export WINDOWS_RUNTIME="$component/distribution"
+python3 scripts/validate-windows-publication.py "$component"
 
 # Preconditions first, so a missing credential doesn't cost a full build.
 [[ -z "$(git status --porcelain)" || -n "${ALLOW_DIRTY:-}" ]] \
@@ -75,21 +80,28 @@ private_key_public_half="$("$sparkle_bin/generate_keys" --account waypoint -p 2>
 [[ "$(<scripts/bundle.sh)" == *"sparkle_public_key=\"$private_key_public_half\""* ]] \
     || fail "the keychain's Sparkle key doesn't match the public key in scripts/bundle.sh; updates would be rejected"
 if (( publish )); then
-    ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null || fail "tag $tag already exists"
+    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+        [[ "$(git rev-list -n 1 "$tag")" == "$(git rev-parse HEAD)" ]] || fail "tag $tag points to another commit"
+        [[ "$mode" == "--publish-only" ]] || fail "tag already exists; resume the exact artifacts with --publish-only"
+    fi
     git fetch -q origin
     git merge-base --is-ancestor HEAD origin/main || fail "HEAD is not on origin/main; push it first"
     gh auth status >/dev/null 2>&1 || fail "gh is not logged in"
+    [[ "$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null || true)" != "false" ]] \
+        || fail "release $tag is already public"
     command -v aws >/dev/null || fail "aws CLI not found (brew install awscli)"
     # List the bucket, not the prefix: `aws s3 ls` exits 1 on an empty prefix (the first release).
     s3 ls "s3://$s3_bucket/" >/dev/null || fail "can't reach s3://$s3_bucket/; check the S3 credentials"
 fi
 
+if [[ "$mode" != "--publish-only" ]]; then
 step "Testing"
 xcrun swift test
 
 step "Building Waypoint $version"
 APP_PATH="$app" VERSION="$version" SIGN_IDENTITY="$identity" scripts/bundle.sh
 codesign --verify --deep --strict "$app"
+python3 scripts/validate-windows-publication.py "$component" --app "$app"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print SUFeedURL' "$app/Contents/Info.plist")" == "$feed_url" ]] \
     || fail "the app's SUFeedURL doesn't match $feed_url"
 # Capture first: `grep -q` exits early and pipefail would count codesign's SIGPIPE as failure.
@@ -146,7 +158,7 @@ hdiutil detach -quiet "$mount"
 step "Generating appcast"
 feed_dir="$(mktemp -d)"
 cp "$dmg" "$feed_dir/"
-# One item per release (the newest), and no deltas: the app is ~2 MB.
+# One item per release and no deltas. The Windows runtime is separate and reused.
 "$sparkle_bin/generate_appcast" --account waypoint --maximum-deltas 0 \
     --download-url-prefix "$public_base/" --link "$repo_url" \
     -o "$dist/appcast.xml" "$feed_dir"
@@ -156,24 +168,59 @@ signature="$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' "$dist/appcast.
 "$sparkle_bin/sign_update" --account waypoint --verify "$dmg" "$signature" || fail "appcast signature doesn't match the DMG"
 grep -q "url=\"$public_base/${dmg:t}\"" "$dist/appcast.xml" || fail "appcast points somewhere unexpected"
 print -P "%F{green}Ready:%f $dmg"
+python3 - "$version" "$dmg" "$dist/appcast.xml" "$component/publication.json" <<'PY'
+import hashlib,json,pathlib,subprocess,sys
+version,*names=sys.argv[1:]
+d={"version":version,"commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),
+   "files":{name:hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() for name in names}}
+pathlib.Path("dist/release.json").write_text(json.dumps(d,indent=2)+"\n")
+PY
+fi
 
 if (( publish )); then
+    python3 - "$version" <<'PY'
+import hashlib,json,pathlib,subprocess,sys
+d=json.loads(pathlib.Path("dist/release.json").read_text())
+if d["version"]!=sys.argv[1] or d["commit"]!=subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip():
+    raise SystemExit("Prepared release does not match this version/commit")
+for name,expected in d["files"].items():
+    if hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()!=expected:
+        raise SystemExit("Prepared artifact changed: "+name)
+PY
+    python3 scripts/validate-windows-publication.py "$component" --app "$app"
     step "Publishing $tag"
-    git tag -a "$tag" -m "Waypoint $version"
-    git push origin "$tag"
-
-    # The DMG first and the appcast last, so the live feed never points at a
-    # file that isn't there yet.
+    # Upload corresponding sources and runtime before any app refers to them.
+    # Required-only checksums are compatible with the S3 provider's multipart API.
+    export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+    assets=()
+    while IFS=$'\t' read -r name key bytes; do
+        s3 cp "$component/$name" "s3://$s3_bucket/$s3_prefix/$key" --only-show-errors
+        [[ "$(curl -fsI "$public_base/$key" | awk 'tolower($1) == "content-length:" { print $2 + 0 }')" == "$bytes" ]] \
+            || fail "component asset isn't publicly served at the right size: $name"
+        assets+=("$component/$name" "$component/$name.sha256")
+    done < <(python3 - "$component/publication.json" <<'PY'
+import json,sys
+for a in json.load(open(sys.argv[1]))["assets"]:
+    print(a["name"],a["key"],a["bytes"],sep="\t")
+PY
+    )
     step "Uploading to s3://$s3_bucket/$s3_prefix/"
     s3 cp "$dmg" "s3://$s3_bucket/$s3_prefix/${dmg:t}" --content-type application/x-apple-diskimage
     [[ "$(curl -fsI "$public_base/${dmg:t}" | awk 'tolower($1) == "content-length:" { print $2 + 0 }')" == "$(stat -f %z "$dmg")" ]] \
         || fail "$public_base/${dmg:t} isn't publicly served at the right size"
-    s3 cp "$dist/appcast.xml" "s3://$s3_bucket/$s3_prefix/appcast.xml" --content-type application/xml --cache-control no-cache
-    curl -fs "$feed_url" | cmp -s - "$dist/appcast.xml" || fail "the public feed at $feed_url doesn't match the new appcast"
-    print -P "%F{green}Live:%f $feed_url"
-
-    step "Mirroring to GitHub Releases"
+    if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then git tag -a "$tag" -m "Waypoint $version"; fi
+    git push origin "$tag"
+    step "Staging GitHub release"
     notes=(--generate-notes)
     [[ -n "${NOTES_FILE:-}" ]] && notes=(--notes-file "$NOTES_FILE")
-    gh release create "$tag" "$dmg" "$dmg.sha256" --title "Waypoint $version" --verify-tag "${notes[@]}"
+    if gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null | grep -q true; then
+        gh release upload "$tag" "$dmg" "$dmg.sha256" "${assets[@]}" --clobber
+    else
+        gh release create "$tag" "$dmg" "$dmg.sha256" "${assets[@]}" --draft --title "Waypoint $version" --verify-tag "${notes[@]}"
+    fi
+    # The feed is the first step that activates automatic distribution.
+    s3 cp "$dist/appcast.xml" "s3://$s3_bucket/$s3_prefix/appcast.xml" --content-type application/xml --cache-control no-cache
+    curl -fs "$feed_url" | cmp -s - "$dist/appcast.xml" || fail "the public feed at $feed_url doesn't match the new appcast"
+    gh release edit "$tag" --draft=false --latest
+    print -P "%F{green}Live:%f $feed_url"
 fi

@@ -11,8 +11,10 @@
 #                  on S3 for signed builds (see release.sh); ad-hoc builds get
 #                  none, so development copies never replace themselves.
 #   BUNDLE_ID      bundle identifier (default: dev.waypoint.launcher)
-#   WINDOWS_RUNTIME staged free runtime (default: build/windows-runtime/Windows
-#                  if present). Set to "none" to omit Windows HotS support.
+#   WINDOWS_RUNTIME signed download descriptor directory (default:
+#                  build/windows-runtime-release/distribution if present).
+#                  A staged full runtime remains supported for local builds.
+#                  Set to "none" to omit Windows HotS support.
 #
 # Uses Xcode's toolchain: open-source toolchains may not match the installed SDK.
 set -euo pipefail
@@ -95,8 +97,12 @@ sign() {
 sign "$sparkle/Versions/B/Autoupdate"
 sign "$sparkle/Versions/B/Updater.app"
 sign "$sparkle"
-windows_runtime="${WINDOWS_RUNTIME:-build/windows-runtime/Windows}"
-if [[ "$windows_runtime" != "none" && -d "$windows_runtime" ]]; then
+windows_runtime="${WINDOWS_RUNTIME:-build/windows-runtime-release/distribution}"
+if [[ "$windows_runtime" != "none" && -f "$windows_runtime/distribution.json" ]]; then
+    mkdir -p "$app/Contents/Resources/WindowsRuntime"
+    cp "$windows_runtime/distribution.json" "$app/Contents/Resources/WindowsRuntime/distribution.json"
+    [[ ! -f "$windows_runtime/Credits.html" ]] || cp "$windows_runtime/Credits.html" "$app/Contents/Resources/Credits.html"
+elif [[ "$windows_runtime" != "none" && -d "$windows_runtime" ]]; then
     mkdir -p "$app/Contents/SharedSupport"
     ditto "$windows_runtime" "$app/Contents/SharedSupport/Windows"
     python3 scripts/sign-wine-runtime.py "$app/Contents/SharedSupport/Windows" --identity "$identity"
@@ -104,7 +110,7 @@ elif [[ -n "${WINDOWS_RUNTIME:-}" && "$windows_runtime" != "none" ]]; then
     print -u2 "Windows runtime not found: $windows_runtime"
     exit 1
 fi
-if [[ -d "$app/Contents/SharedSupport/Windows" ]]; then
+if [[ -d "$app/Contents/SharedSupport/Windows" || -d "$app/Contents/Resources/WindowsRuntime" ]]; then
     sign --entitlements tools/wine-runtime/waypoint.entitlements "$app"
 else
     sign "$app"

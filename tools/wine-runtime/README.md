@@ -8,7 +8,9 @@ a CrossOver license requirement.
 
 Requirements for players: Apple silicon, macOS 15+, Rosetta. Waypoint itself
 stays arm64. Wine, the small Windows login bridge and all required dylibs are
-bundled; players need no compiler, Homebrew, Windows Battle.net or paid tool.
+downloaded and verified at the first Windows HotS Play, then reused from a
+versioned cache. The native app and its updates stay small. Players need no
+compiler, Homebrew, Windows Battle.net or paid tool.
 
 ## Build
 
@@ -17,6 +19,13 @@ FreeType and GnuTLS headers:
 
 ```sh
 python3 scripts/build-wine-runtime.py
+python3 scripts/fetch-runtime-sources.py
+python3 scripts/build-runtime-deps.py --inputs build/release-source-inputs --work build/source-built-deps/clean
+python3 scripts/stage-release-runtime.py --runtime build/windows-runtime/Windows \
+  --dependencies build/source-built-deps/clean --output build/release-runtime/Windows
+# Commit the recipes, then sign/notarize the independent component:
+python3 scripts/package-windows-runtime.py --runtime build/release-runtime/Windows \
+  --inputs build/release-source-inputs --version 0.5.0
 scripts/bundle.sh
 ```
 
@@ -26,9 +35,17 @@ toolchain, a macOS 14.6 deployment target and public dependency libraries.
 and `--output` allow existing downloads and build directories to be reused.
 Build paths must not contain spaces; installed app, game and runtime paths can.
 
-The bundle script includes `build/windows-runtime/Windows` when present.
+The bundle script includes only `build/windows-runtime-release/distribution`
+when present. Its descriptor pins the final notarized archive and manifest hashes
+and corresponding-source URL. The component is acquired on the first Windows
+Play, before authentication, and progress stays in the game's normal row.
+The download is size-bounded, retries temporary network errors and validates the
+archive before extracting it into a private staging folder. Existing verified
+cache versions work offline. Cancelling the task or quitting leaves no partial
+installed version; a later Play retries the download.
 `WINDOWS_RUNTIME=none scripts/bundle.sh` creates the small native-only app.
-`WINDOWS_RUNTIME=/path/to/Windows` selects another staged component. Nested
+`WINDOWS_RUNTIME=/path/to/Windows` embeds a staged full component for local
+development; release builds use the download descriptor. Nested
 Mach-O files are signed before generating `runtime.json`, then the app is
 sealed. The Wine executables alone receive the execution/DYLD entitlements.
 

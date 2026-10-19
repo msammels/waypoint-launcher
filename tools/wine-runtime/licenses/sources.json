@@ -48,8 +48,8 @@
     "url": "https://raw.githubusercontent.com/libffi/libffi/v3.4.6/LICENSE"
   },
   "Libpng.txt": {
-    "sha256": "7317e078e2d3b5d7ba5a6159e650945153262b44b76f6700f8e9edb261c5143e",
-    "url": "https://raw.githubusercontent.com/pnggroup/libpng/v1.6.43/LICENSE"
+    "url": "https://raw.githubusercontent.com/pnggroup/libpng/v1.6.45/LICENSE",
+    "sha256": "16d9daaafbf63a31a5bdc91d4600972548fef5aaa1244202393288dbd079c49a"
   },
   "MacPortsLegacySupport.txt": {
     "sha256": "327758c118a3c9be158e788a8397035cfa62738a977618cdc44ba09aaa0bad3d",
