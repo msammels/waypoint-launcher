@@ -1,7 +1,7 @@
 # Free Windows HotS runtime
 
-This optional component is built from CodeWeavers' published Wine 26.3
-LGPL source archive and the public MIT DXMT 0.80 release. It contains no
+This optional component builds Wine from CodeWeavers' CrossOver 26.3
+LGPL source release and uses the public MIT DXMT 0.80 release. It contains no
 CrossOver application binaries, license data or D3DMetal. The name of the
 source archive and Wine's internal `crossover` user profile do not introduce
 a CrossOver license requirement.
