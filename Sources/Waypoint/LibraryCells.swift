@@ -33,7 +33,7 @@ struct InstallableRowState {
 final class GameCell: NSView {
     static let identifier = NSUserInterfaceItemIdentifier("game")
 
-    private let icon = NSImageView()
+    private let icon = GameIconView()
     private let name = NSTextField.label(.headline)
     private let progress = NSProgressIndicator.bar()
     private let detail = NSTextField.label(.subheadline, color: .secondaryLabelColor, monospacedDigits: true)
@@ -78,7 +78,9 @@ final class GameCell: NSView {
             iconPath = path
             if app == nil, let windows, let data = WindowsExecutableIcon.data(at: windows), let image = NSImage(data: data) {
                 icon.image = image
+                icon.usesWindowsTile = true
             } else {
+                icon.usesWindowsTile = false
                 if app == nil, windows != nil { iconPath = nil }
                 icon.image = path.map { NSWorkspace.shared.icon(forFile: $0) } ?? NSWorkspace.shared.icon(for: .applicationBundle)
             }
@@ -352,8 +354,8 @@ final class InstallableCell: NSView {
 /// A library row: a 40-point icon, a column of text that takes the free
 /// width, and whatever of `trailing` is showing on the right.
 @MainActor
-private func layOutRow(in cell: NSView, icon: NSImageView, text views: [NSView], trailing: [NSView]) {
-    icon.imageScaling = .scaleProportionallyUpOrDown
+private func layOutRow(in cell: NSView, icon: NSView, text views: [NSView], trailing: [NSView]) {
+    (icon as? NSImageView)?.imageScaling = .scaleProportionallyUpOrDown
     let text = NSStackView.column(views, spacing: 3)
     text.setContentHuggingPriority(.init(1), for: .horizontal)
     let row = NSStackView(views: [icon, text] + trailing)
